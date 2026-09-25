@@ -72,12 +72,21 @@ fun WatchScreen() {
     var followBoat by remember { mutableStateOf(true) }
     var dwellSec by remember { mutableStateOf(8) }
     var permissionNote by remember { mutableStateOf<String?>(null) }
+    var locationGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
         val fine = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true
-        permissionNote = if (fine) null else "Location permission is required for an anchor watch."
+        val coarse = granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        locationGranted = fine || coarse
+        permissionNote = if (locationGranted) null else "Location permission is required for an anchor watch."
     }
 
     val notifyLauncher = rememberLauncherForActivityResult(
@@ -98,33 +107,26 @@ fun WatchScreen() {
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(locationGranted) {
         val lm = context.getSystemService(LocationManager::class.java)
         val listener = LocationListener { location ->
             if (!WatchStore.snapshot().watching) {
                 WatchStore.previewFix(location.toFix())
             }
         }
-        try {
-            if (ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.ACCESS_FINE_LOCATION
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
-                lm.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    1500L,
-                    0f,
-                    listener,
-                    Looper.getMainLooper()
-                )
+        if (locationGranted) {
+            seedLastKnown(lm)
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
+                try {
+                    if (lm.isProviderEnabled(provider)) {
+                        lm.requestLocationUpdates(provider, 1000L, 0f, listener, Looper.getMainLooper())
+                    }
+                } catch (_: Exception) {
+                }
             }
-        } catch (_: Exception) {
         }
         onDispose {
-            try {
-                lm.removeUpdates(listener)
-            } catch (_: Exception) {
-            }
+            try { lm.removeUpdates(listener) } catch (_: Exception) {}
         }
     }
 
@@ -135,10 +137,9 @@ fun WatchScreen() {
     ) {
         OsmMap(
             state = state,
-            followBoat = followBoat && state.watching,
+            followBoat = followBoat,
             modifier = Modifier.fillMaxSize()
         )
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -148,7 +149,6 @@ fun WatchScreen() {
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             StatusCard(state = state, permissionNote = permissionNote)
-
             Column {
                 ControlsCard(
                     state = state,
@@ -159,11 +159,7 @@ fun WatchScreen() {
                     onRadius = { WatchStore.setRadius(it) },
                     onUnits = { WatchStore.setUseFeet(it) },
                     onDrop = {
-                        AnchorWatchService.start(
-                            context,
-                            state.radiusFt,
-                            dwellSec * 1000L
-                        )
+                        AnchorWatchService.start(context, state.radiusFt, dwellSec * 1000L)
                     },
                     onWeigh = { AnchorWatchService.stop(context) },
                     onSilence = { AnchorWatchService.silence(context) },
@@ -210,19 +206,19 @@ private fun StatusCard(state: WatchState, permissionNote: String?) {
             val accFt = (state.boat?.accuracyM ?: 0f) * WatchState.M_TO_FT
             val accLabel = formatDistance(accFt.toDouble(), state.useFeet)
             Text(
-                text = if (state.watching) {
-                    "$distLabel from hook   ·   limit $radiusLabel"
-                } else {
-                    "Set swing radius, then drop the hook."
+                text = when {
+                    state.watching -> "$distLabel from hook   /   limit $radiusLabel"
+                    state.boat != null -> "Fix locked. Set radius, then drop the hook."
+                    else -> "Waiting for a GPS / network fix"
                 },
                 style = MaterialTheme.typography.bodyLarge
             )
             Text(
                 text = buildString {
-                    append("GPS ±$accLabel")
-                    if (!state.gpsEnabled) append("   ·   GPS OFF")
+                    if (state.boat == null) append("No position yet") else append("GPS +-$accLabel")
+                    if (!state.gpsEnabled) append("   GPS OFF")
                     state.boat?.let {
-                        append("   ·   ${"%.5f".format(it.latitude)}, ${"%.5f".format(it.longitude)}")
+                        append("   ${"%.5f".format(it.latitude)}, ${"%.5f".format(it.longitude)}")
                     }
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -272,11 +268,7 @@ private fun ControlsCard(
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Swing radius",
-                    modifier = Modifier.weight(1f),
-                    fontWeight = FontWeight.Medium
-                )
+                Text("Swing radius", modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
                 TextButton(onClick = { onUnits(!state.useFeet) }) {
                     Text(if (state.useFeet) "ft" else "m")
                 }
@@ -304,22 +296,17 @@ private fun ControlsCard(
                 valueRange = 3f..20f,
                 steps = 16
             )
-
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.MyLocation, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Follow boat", modifier = Modifier.weight(1f))
                 Switch(checked = followBoat, onCheckedChange = onFollow)
             }
-
             Spacer(Modifier.height(8.dp))
-
             if (state.alarming) {
                 Button(
                     onClick = onSilence,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Default.VolumeOff, contentDescription = null)
@@ -328,23 +315,15 @@ private fun ControlsCard(
                 }
                 Spacer(Modifier.height(8.dp))
             }
-
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (state.watching) {
-                    Button(
-                        onClick = onWeigh,
-                        modifier = Modifier.weight(1f)
-                    ) {
+                    Button(onClick = onWeigh, modifier = Modifier.weight(1f)) {
                         Icon(Icons.Default.Pause, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text("Weigh anchor")
                     }
                 } else {
-                    Button(
-                        onClick = onDrop,
-                        modifier = Modifier.weight(1f),
-                        enabled = state.boat != null
-                    ) {
+                    Button(onClick = onDrop, modifier = Modifier.weight(1f), enabled = state.boat != null) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text("Drop anchor")
@@ -354,25 +333,16 @@ private fun ControlsCard(
                     Icon(Icons.Default.NotificationsActive, contentDescription = null)
                 }
             }
-
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onLocationSettings) {
-                    Text("All-the-time location")
-                }
-                TextButton(onClick = onBattery) {
-                    Text("Ignore battery saver")
-                }
+                TextButton(onClick = onLocationSettings) { Text("All-the-time location") }
+                TextButton(onClick = onBattery) { Text("Ignore battery saver") }
             }
         }
     }
 }
 
 private fun formatDistance(feet: Double, useFeet: Boolean): String {
-    return if (useFeet) {
-        "${feet.roundToInt()} ft"
-    } else {
-        "${(feet * WatchState.FT_TO_M).roundToInt()} m"
-    }
+    return if (useFeet) "${feet.roundToInt()} ft" else "${(feet * WatchState.FT_TO_M).roundToInt()} m"
 }
 
 private fun Location.toFix(): GeoFix = GeoFix(
@@ -383,6 +353,19 @@ private fun Location.toFix(): GeoFix = GeoFix(
     speedMps = if (hasSpeed()) speed else 0f,
     bearing = if (hasBearing()) bearing else 0f
 )
+
+@SuppressLint("MissingPermission")
+private fun seedLastKnown(lm: LocationManager) {
+    val candidates = listOf(
+        LocationManager.GPS_PROVIDER,
+        LocationManager.NETWORK_PROVIDER,
+        LocationManager.PASSIVE_PROVIDER
+    ).mapNotNull { provider ->
+        runCatching { lm.getLastKnownLocation(provider) }.getOrNull()
+    }
+    val best = candidates.maxByOrNull { it.time } ?: return
+    WatchStore.previewFix(best.toFix())
+}
 
 private fun openAppSettings(context: android.content.Context) {
     runCatching {
