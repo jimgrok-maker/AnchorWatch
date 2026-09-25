@@ -12,8 +12,8 @@ android {
         applicationId = "com.jimgrok.anchorwatch"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.0.6"
+        versionCode = 8
+        versionName = "1.0.7"
     }
 
     buildTypes {
@@ -73,11 +73,16 @@ fun writePngFromB64(name: String, dest: File, size: Int? = null) {
         return
     }
     val src = javax.imageio.ImageIO.read(raw.inputStream())
+        ?: error("Could not decode icons/$name.b64 as PNG")
     val scaled = java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB)
     val g = scaled.createGraphics()
     g.setRenderingHint(
         java.awt.RenderingHints.KEY_INTERPOLATION,
-        java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR
+        java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC
+    )
+    g.setRenderingHint(
+        java.awt.RenderingHints.KEY_ANTIALIASING,
+        java.awt.RenderingHints.VALUE_ANTIALIAS_ON
     )
     g.drawImage(src, 0, 0, size, size, null)
     g.dispose()
@@ -96,10 +101,6 @@ tasks.register("decodeLauncherIcons") {
             writePngFromB64("ic_launcher_xxxhdpi.png", file("src/main/res/mipmap-$folder/ic_launcher.png"), px)
             writePngFromB64("ic_launcher_xxxhdpi.png", file("src/main/res/mipmap-$folder/ic_launcher_round.png"), px)
         }
-        writePngFromB64(
-            "ic_launcher_foreground.png",
-            file("src/main/res/drawable-nodpi/ic_launcher_foreground.png")
-        )
     }
 }
 
