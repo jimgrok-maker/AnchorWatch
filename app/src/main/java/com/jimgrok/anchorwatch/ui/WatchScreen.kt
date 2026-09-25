@@ -29,8 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -208,7 +208,7 @@ private fun StatusCard(state: WatchState, permissionNote: String?) {
             Text(
                 text = when {
                     state.watching -> "$distLabel from hook   /   limit $radiusLabel"
-                    state.boat != null -> "Fix locked. Set radius, then drop the hook."
+                    state.boat != null -> "Fix locked. Set radius, then START ALARM."
                     else -> "Waiting for a GPS / network fix"
                 },
                 style = MaterialTheme.typography.bodyLarge
@@ -311,27 +311,40 @@ private fun ControlsCard(
                 ) {
                     Icon(Icons.Default.VolumeOff, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Silence alarm")
+                    Text("Silence sound")
                 }
                 Spacer(Modifier.height(8.dp))
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (state.watching) {
-                    Button(onClick = onWeigh, modifier = Modifier.weight(1f)) {
-                        Icon(Icons.Default.Pause, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Weigh anchor")
-                    }
-                } else {
-                    Button(onClick = onDrop, modifier = Modifier.weight(1f), enabled = state.boat != null) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Drop anchor")
-                    }
+            if (state.watching) {
+                Button(
+                    onClick = onWeigh,
+                    modifier = Modifier.fillMaxWidth().height(64.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = null)
+                    Spacer(Modifier.width(10.dp))
+                    Text("STOP ALARM", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 }
-                FilledTonalButton(onClick = onTest) {
-                    Icon(Icons.Default.NotificationsActive, contentDescription = null)
+            } else {
+                Button(
+                    onClick = onDrop,
+                    modifier = Modifier.fillMaxWidth().height(64.dp),
+                    enabled = state.boat != null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary
+                    )
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(10.dp))
+                    Text("START ALARM", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 }
+            }
+            Spacer(Modifier.height(8.dp))
+            FilledTonalButton(onClick = onTest, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.NotificationsActive, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Test alarm sound")
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onLocationSettings) { Text("All-the-time location") }
