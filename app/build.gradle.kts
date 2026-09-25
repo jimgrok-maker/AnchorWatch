@@ -12,8 +12,8 @@ android {
         applicationId = "com.jimgrok.anchorwatch"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 7
+        versionName = "1.0.6"
     }
 
     buildTypes {
@@ -63,4 +63,46 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+}
+
+fun writePngFromB64(name: String, dest: File, size: Int? = null) {
+    val raw = java.util.Base64.getDecoder().decode(file("icons/$name.b64").readText().trim())
+    dest.parentFile.mkdirs()
+    if (size == null) {
+        dest.writeBytes(raw)
+        return
+    }
+    val src = javax.imageio.ImageIO.read(raw.inputStream())
+    val scaled = java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    val g = scaled.createGraphics()
+    g.setRenderingHint(
+        java.awt.RenderingHints.KEY_INTERPOLATION,
+        java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR
+    )
+    g.drawImage(src, 0, 0, size, size, null)
+    g.dispose()
+    javax.imageio.ImageIO.write(scaled, "png", dest)
+}
+
+tasks.register("decodeLauncherIcons") {
+    doLast {
+        listOf(
+            "mdpi" to 48,
+            "hdpi" to 72,
+            "xhdpi" to 96,
+            "xxhdpi" to 144,
+            "xxxhdpi" to 192
+        ).forEach { (folder, px) ->
+            writePngFromB64("ic_launcher_xxxhdpi.png", file("src/main/res/mipmap-$folder/ic_launcher.png"), px)
+            writePngFromB64("ic_launcher_xxxhdpi.png", file("src/main/res/mipmap-$folder/ic_launcher_round.png"), px)
+        }
+        writePngFromB64(
+            "ic_launcher_foreground.png",
+            file("src/main/res/drawable-nodpi/ic_launcher_foreground.png")
+        )
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn("decodeLauncherIcons")
 }
