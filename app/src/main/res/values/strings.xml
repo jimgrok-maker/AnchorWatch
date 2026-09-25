@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AnchorWatch</string>
+    <string name="watch_notification_title">Anchor watch running</string>
+    <string name="alarm_notification_title">DRAGGING ANCHOR</string>
+</resources>
