@@ -13,6 +13,7 @@ import android.location.LocationManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.jimgrok.anchorwatch.AnchorWatchApp
@@ -74,6 +75,7 @@ class AnchorWatchService : Service(), LocationListener {
         // Resume an existing watch after an OS restart instead of re-dropping the hook at the
         // current position. A persisted `watching` flag with a stored hook is authoritative.
         if (state.watching && state.anchor != null) {
+            Log.i(TAG, "Resuming persisted watch (anchor=${state.anchor.latitude},${state.anchor.longitude}, radius=${state.radiusFt}ft)")
             WatchStore.setRadius(radius)
             startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
             startGps()
@@ -85,6 +87,7 @@ class AnchorWatchService : Service(), LocationListener {
         if (seed != null) {
             WatchStore.startWatch(seed, radius)
         } else {
+            Log.w(TAG, "No last-known fix and no persisted anchor; watch started without a hook")
             WatchStore.setRadius(radius)
         }
 
@@ -160,6 +163,7 @@ class AnchorWatchService : Service(), LocationListener {
         val outsideSince = state.outsideSinceMs ?: return
         val shouldAlarm = (System.currentTimeMillis() - outsideSince) >= dwellMs
         if (shouldAlarm && !state.alarming) {
+            Log.i(TAG, "Alarm firing: outside for ${System.currentTimeMillis() - outsideSince}ms (dwell=${dwellMs}ms)")
             WatchStore.setAlarming(true)
             alarmPlayer.start()
         }
@@ -181,6 +185,7 @@ class AnchorWatchService : Service(), LocationListener {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
+            Log.w(TAG, "ACCESS_FINE_LOCATION not granted; GPS updates not requested")
             return
         }
         stopGps()
@@ -193,15 +198,19 @@ class AnchorWatchService : Service(), LocationListener {
                     this,
                     Looper.getMainLooper()
                 )
+            } else {
+                Log.w(TAG, "GPS_PROVIDER not enabled; no location updates")
             }
-        } catch (_: SecurityException) {
+        } catch (e: SecurityException) {
+            Log.w(TAG, "requestLocationUpdates denied by system", e)
         }
     }
 
     private fun stopGps() {
         try {
             locationManager.removeUpdates(this)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "removeUpdates failed (likely no active updates)", e)
         }
     }
 
@@ -222,7 +231,8 @@ class AnchorWatchService : Service(), LocationListener {
         val loc = try {
             locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        } catch (_: SecurityException) {
+        } catch (e: SecurityException) {
+            Log.w(TAG, "getLastKnownLocation denied", e)
             null
         }
         return if (loc != null) {
@@ -300,6 +310,7 @@ class AnchorWatchService : Service(), LocationListener {
         const val DEFAULT_DWELL_MS = 8_000L
         private const val NOTIF_ID = 42
         private const val ALARM_CHECK_INTERVAL_MS = 1_000L
+        private const val TAG = "AnchorWatchService"
 
         fun start(context: Context, radiusFt: Int, dwellMs: Long = DEFAULT_DWELL_MS) {
             val intent = Intent(context, AnchorWatchService::class.java).apply {
