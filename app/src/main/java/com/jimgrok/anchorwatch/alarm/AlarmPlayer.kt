@@ -8,9 +8,11 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import com.jimgrok.anchorwatch.R
 
 class AlarmPlayer(private val context: Context) {
     private var player: MediaPlayer? = null
+    private var preparing = false
     private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         context.getSystemService(VibratorManager::class.java)?.defaultVibrator
     } else {
@@ -19,37 +21,95 @@ class AlarmPlayer(private val context: Context) {
     }
 
     fun start() {
-        if (player != null) return
-        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        try {
-            player = MediaPlayer().apply {
-                setDataSource(context, uri)
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
-                isLooping = true
-                setVolume(1f, 1f)
-                prepare()
-                start()
+        if (player != null || preparing) return
+        preparing = true
+        val mp = MediaPlayer().apply {
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            isLooping = true
+            setVolume(1f, 1f)
+            setOnPreparedListener {
+                preparing = false
+                // If the alarm was dismissed while we were still preparing, bail out.
+                if (this@AlarmPlayer.player != null) return@setOnPreparedListener
+                try {
+                    start()
+                } catch (_: IllegalStateException) {
+                    releaseQuietly()
+                    return@setOnPreparedListener
+                }
+                this@AlarmPlayer.player = this
             }
+            setOnErrorListener { _, _, _ ->
+                preparing = false
+                // Default ringtone is null/unusable — fall back to the bundled alarm so
+                // the watch is never silent.
+                if (!hasDataSource) {
+                    releaseQuietly()
+                    start()
+                } else {
+                    releaseQuietly()
+                }
+                true
+            }
+        }
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        try {
+            if (uri != null) {
+                mp.setDataSource(context, uri)
+            } else {
+                setFallbackDataSource(mp)
+            }
+            // prepareAsync() so the (potentially blocking) ringtone decode never stalls the
+            // main-thread location callback that fires the alarm.
+            mp.prepareAsync()
         } catch (_: Exception) {
-            player?.release()
-            player = null
+            setFallbackDataSource(mp)
+            try {
+                mp.prepareAsync()
+            } catch (_: Exception) {
+                preparing = false
+                mp.release()
+                player = null
+            }
         }
         val pattern = longArrayOf(0, 600, 250, 600, 250, 900)
         vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
     }
 
-    fun stop() {
+    private fun setFallbackDataSource(mp: MediaPlayer) {
+        // A bundled alarm guarantees the watch can always make noise, even on a device whose
+        // default ringtone is null or set to a silent tone.
+        mp.setDataSource(context, context.resources.openRawResourceFd(R.raw.alarm_fallback))
+    }
+
+    private fun MediaPlayer.releaseQuietly() {
         try {
-            player?.stop()
+            if (isPlaying) stop()
+        } catch (_: IllegalStateException) {
+        }
+        try {
+            release()
         } catch (_: Exception) {
         }
-        player?.release()
+    }
+
+    fun stop() {
+        preparing = false
+        player?.let { p ->
+            try {
+                if (p.isPlaying) p.stop()
+            } catch (_: IllegalStateException) {
+            }
+            try {
+                p.release()
+            } catch (_: Exception) {
+            }
+        }
         player = null
         vibrator?.cancel()
     }
