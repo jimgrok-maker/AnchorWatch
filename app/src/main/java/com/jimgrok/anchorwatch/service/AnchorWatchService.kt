@@ -10,8 +10,10 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.jimgrok.anchorwatch.AnchorWatchApp
@@ -28,6 +30,14 @@ class AnchorWatchService : Service(), LocationListener {
     private lateinit var locationManager: LocationManager
     private lateinit var alarmPlayer: AlarmPlayer
     private var dwellMs: Long = DEFAULT_DWELL_MS
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val alarmCheckRunnable = object : Runnable {
+        override fun run() {
+            evaluateAlarm()
+            mainHandler.postDelayed(this, ALARM_CHECK_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -58,26 +68,39 @@ class AnchorWatchService : Service(), LocationListener {
             }
         }
 
-        val radius = intent?.getIntExtra(EXTRA_RADIUS_FT, WatchStore.snapshot().radiusFt)
-            ?: WatchStore.snapshot().radiusFt
+        val state = WatchStore.snapshot()
+        val radius = intent?.getIntExtra(EXTRA_RADIUS_FT, state.radiusFt) ?: state.radiusFt
         dwellMs = intent?.getLongExtra(EXTRA_DWELL_MS, DEFAULT_DWELL_MS) ?: DEFAULT_DWELL_MS
 
+        // Resume an existing watch after an OS restart instead of re-dropping the hook at the
+        // current position. A persisted `watching` flag with a stored hook is authoritative.
+        if (state.watching && state.anchor != null) {
+            Log.i(TAG, "Resuming persisted watch (anchor=${state.anchor.latitude},${state.anchor.longitude}, radius=${state.radiusFt}ft)")
+            WatchStore.setRadius(radius)
+            startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
+            startGps()
+            startAlarmTicker()
+            return START_STICKY
+        }
+
         val seed = lastKnownFix()
-        if (seed != null && !WatchStore.snapshot().watching) {
+        if (seed != null) {
             WatchStore.startWatch(seed, radius)
         } else {
+            Log.w(TAG, "No last-known fix and no persisted anchor; watch started without a hook")
             WatchStore.setRadius(radius)
         }
 
         startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
         startGps()
+        startAlarmTicker()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        stopAlarmTicker()
         stopGps()
         alarmPlayer.stop()
-        WatchStore.stopWatch()
         super.onDestroy()
     }
 
@@ -99,35 +122,70 @@ class AnchorWatchService : Service(), LocationListener {
         val distanceFt = haversineFt(
             anchor.latitude, anchor.longitude, fix.latitude, fix.longitude
         )
-        val now = fix.timeMs
+        val now = System.currentTimeMillis()
         val outside = distanceFt > state.radiusFt
+        // outsideSinceMs is the wall-clock moment the boat first crossed the circle; it is
+        // preserved while outside and cleared the moment the boat comes back inside. The alarm
+        // decision itself is made by the ticker (see evaluateAlarm), not here, so it is not
+        // dependent on how frequently GPS fixes arrive.
         val outsideSince = when {
             !outside -> null
             state.outsideSinceMs != null -> state.outsideSinceMs
             else -> now
         }
         WatchStore.onFix(fix, distanceFt, outsideSince)
-
-        val shouldAlarm = outsideSince != null && (now - outsideSince) >= dwellMs
-        if (shouldAlarm && !state.alarming) {
-            WatchStore.setAlarming(true)
-            alarmPlayer.start()
-        }
         startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
     }
 
     override fun onProviderEnabled(provider: String) {
-        WatchStore.setGpsEnabled(true)
+        // Only the GPS provider is requested; ignore network/passive toggles so the
+        // "GPS OFF" lamp reflects the GPS provider, not any arbitrary provider.
+        if (provider == LocationManager.GPS_PROVIDER) {
+            WatchStore.setGpsEnabled(true)
+        }
     }
 
     override fun onProviderDisabled(provider: String) {
-        WatchStore.setGpsEnabled(false)
+        if (provider == LocationManager.GPS_PROVIDER) {
+            WatchStore.setGpsEnabled(false)
+        }
+    }
+
+    /**
+     * Re-evaluate the alarm on a fixed wall-clock cadence rather than only on GPS fixes.
+     * This keeps the dwell countdown correct when the GPS fix rate drops (e.g. poor sky):
+     * the boat's last known position and the wall-clock outsideSinceMs are enough to know the
+     * boat has been outside longer than the dwell, even before the next fix arrives.
+     */
+    private fun evaluateAlarm() {
+        val state = WatchStore.snapshot()
+        if (!state.watching) return
+        val outsideSince = state.outsideSinceMs ?: return
+        val shouldAlarm = (System.currentTimeMillis() - outsideSince) >= dwellMs
+        if (shouldAlarm && !state.alarming) {
+            Log.i(TAG, "Alarm firing: outside for ${System.currentTimeMillis() - outsideSince}ms (dwell=${dwellMs}ms)")
+            WatchStore.setAlarming(true)
+            alarmPlayer.start()
+        }
+        // Refresh the notification so the "DRAGGING" state is shown as soon as the alarm
+        // fires, even if no GPS fix arrived this tick.
+        startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
+    }
+
+    private fun startAlarmTicker() {
+        stopAlarmTicker()
+        mainHandler.postDelayed(alarmCheckRunnable, ALARM_CHECK_INTERVAL_MS)
+    }
+
+    private fun stopAlarmTicker() {
+        mainHandler.removeCallbacks(alarmCheckRunnable)
     }
 
     private fun startGps() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
+            Log.w(TAG, "ACCESS_FINE_LOCATION not granted; GPS updates not requested")
             return
         }
         stopGps()
@@ -140,19 +198,24 @@ class AnchorWatchService : Service(), LocationListener {
                     this,
                     Looper.getMainLooper()
                 )
+            } else {
+                Log.w(TAG, "GPS_PROVIDER not enabled; no location updates")
             }
-        } catch (_: SecurityException) {
+        } catch (e: SecurityException) {
+            Log.w(TAG, "requestLocationUpdates denied by system", e)
         }
     }
 
     private fun stopGps() {
         try {
             locationManager.removeUpdates(this)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "removeUpdates failed (likely no active updates)", e)
         }
     }
 
     private fun stopWatchInternal() {
+        stopAlarmTicker()
         alarmPlayer.stop()
         stopGps()
         WatchStore.stopWatch()
@@ -168,7 +231,8 @@ class AnchorWatchService : Service(), LocationListener {
         val loc = try {
             locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        } catch (_: SecurityException) {
+        } catch (e: SecurityException) {
+            Log.w(TAG, "getLastKnownLocation denied", e)
             null
         }
         return if (loc != null) {
@@ -245,6 +309,8 @@ class AnchorWatchService : Service(), LocationListener {
         const val EXTRA_DWELL_MS = "dwell_ms"
         const val DEFAULT_DWELL_MS = 8_000L
         private const val NOTIF_ID = 42
+        private const val ALARM_CHECK_INTERVAL_MS = 1_000L
+        private const val TAG = "AnchorWatchService"
 
         fun start(context: Context, radiusFt: Int, dwellMs: Long = DEFAULT_DWELL_MS) {
             val intent = Intent(context, AnchorWatchService::class.java).apply {

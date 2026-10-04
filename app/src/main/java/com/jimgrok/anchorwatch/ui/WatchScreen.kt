@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -75,6 +76,8 @@ import com.jimgrok.anchorwatch.data.WatchStore
 import com.jimgrok.anchorwatch.service.AnchorWatchService
 import kotlin.math.roundToInt
 
+private const val TAG = "WatchScreen"
+
 private val LampGreen = Color(0xFF2E9F5A)
 private val LampRed = Color(0xFFC62828)
 
@@ -117,7 +120,10 @@ data class SystemReadiness(
                 pm.isIgnoringBatteryOptimizations(context.packageName)
             }.getOrDefault(false)
             return SystemReadiness(
-                gps = (fine || coarse) && providerOn,
+                // The service only requests GPS_PROVIDER with ACCESS_FINE_LOCATION, so a
+                // coarse-only grant can't actually feed the watch. Require fine for the GPS
+                // lamp to be green (coarse alone still satisfies `background` for legacy).
+                gps = fine && providerOn,
                 background = background && notifyOk,
                 battery = battery
             )
@@ -192,11 +198,18 @@ fun WatchScreen() {
                     if (lm.isProviderEnabled(provider)) {
                         lm.requestLocationUpdates(provider, 1000L, 0f, listener, Looper.getMainLooper())
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    Log.w(TAG, "requestLocationUpdates($provider) failed", e)
                 }
             }
         }
-        onDispose { try { lm.removeUpdates(listener) } catch (_: Exception) {} }
+        onDispose {
+            try {
+                lm.removeUpdates(listener)
+            } catch (e: Exception) {
+                Log.w(TAG, "removeUpdates failed", e)
+            }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -468,5 +481,5 @@ private fun openAppSettings(context: Context) {
                 data = Uri.parse("package:${context.packageName}")
             }
         )
-    }
+    }.onFailure { Log.w(TAG, "openAppSettings failed", it) }
 }

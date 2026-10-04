@@ -12,6 +12,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # NOTE: make_icons.py is deterministic — it paints the launcher icon from a fixed
+      # formula and writes the same PNGs every run. If the icon is committed to the repo
+      # (app/src/main/res/mipmap-*/ic_launcher*.png and res/drawable/ic_launcher_foreground.png),
+      # this Python step can be removed to save ~10-20s of network + Pillow work per build.
+      # It is kept here so the icon is always regenerated from source.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
