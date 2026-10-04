@@ -112,17 +112,13 @@ data class SystemReadiness(
             }
             val lm = context.getSystemService(LocationManager::class.java)
             val providerOn = runCatching {
-                lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
-                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
             }.getOrDefault(false)
             val pm = context.getSystemService(PowerManager::class.java)
             val battery = runCatching {
                 pm.isIgnoringBatteryOptimizations(context.packageName)
             }.getOrDefault(false)
             return SystemReadiness(
-                // The service only requests GPS_PROVIDER with ACCESS_FINE_LOCATION, so a
-                // coarse-only grant can't actually feed the watch. Require fine for the GPS
-                // lamp to be green (coarse alone still satisfies `background` for legacy).
                 gps = fine && providerOn,
                 background = background && notifyOk,
                 battery = battery
@@ -223,7 +219,11 @@ fun WatchScreen() {
                 permissionNote = permissionNote,
                 readiness = readiness,
                 onGpsLamp = {
-                    if (!readiness.gps) runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                    val fine = ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (!fine) openAppSettings(context)
+                    else runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
                 },
                 onBgLamp = { openAppSettings(context) },
                 onBatteryLamp = {
@@ -369,7 +369,7 @@ private fun Lamp(label: String, ok: Boolean, onClick: () -> Unit) {
 
 private fun readinessHint(readiness: SystemReadiness): String {
     return when {
-        !readiness.gps -> "Tap GPS: turn on location and allow precise location."
+        !readiness.gps -> "Tap GPS: allow precise location, or turn the GPS provider on."
         !readiness.background -> "Tap BG: set Location to Allow all the time, and allow notifications."
         !readiness.battery -> "Tap BAT: allow Ignore battery optimizations so the watch stays alive."
         else -> ""
