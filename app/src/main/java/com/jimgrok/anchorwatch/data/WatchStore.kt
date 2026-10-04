@@ -6,15 +6,32 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 object WatchStore {
     private val _state = MutableStateFlow(WatchState())
     val state: StateFlow<WatchState> = _state.asStateFlow()
 
+    // Track is a bounded ring buffer so appending a fix is O(1) instead of copying the whole
+    // list every fix (the map only needs the visible track, and a 2500-point line is plenty).
+    private val trackBuffer = java.util.ArrayDeque<GeoFix>()
+    private const val MAX_TRACK = 2500
+    // Bumped on every change so the UI can tell when the polyline actually changed without
+    // comparing 2500 points each recomposition.
+    private val trackVersion = AtomicLong(0)
+    var trackVersionLong: Long
+        get() = trackVersion.get()
+        private set
+
     private var prefs: SharedPreferences? = null
     private var initialized = false
 
     fun snapshot(): WatchState = _state.value
+
+    fun trackPoints(): List<GeoFix> = ArrayList(trackBuffer)
 
     /**
      * Load the persisted watch state into memory. Call this from Application.onCreate so
@@ -43,7 +60,7 @@ object WatchStore {
             alarming = false,
             anchor = anchor,
             boat = anchor,
-            track = listOf(anchor),
+            track = trackPoints(),
             radiusFt = radiusFt,
             distanceFt = 0.0,
             outsideSinceMs = null,
@@ -51,6 +68,9 @@ object WatchStore {
             lastUpdateMs = anchor.timeMs,
             useFeet = _state.value.useFeet
         )
+        trackBuffer.clear()
+        trackBuffer.addLast(anchor)
+        trackVersion.incrementAndGet()
         persist(_state.value)
     }
 
@@ -62,6 +82,8 @@ object WatchStore {
                 outsideSinceMs = null
             )
         }
+        trackBuffer.clear()
+        trackVersion.incrementAndGet()
         persist(_state.value)
     }
 
@@ -75,20 +97,26 @@ object WatchStore {
     }
 
     fun onFix(fix: GeoFix, distanceFt: Double, outsideSinceMs: Long?) {
-        _state.update { current ->
-            val last = current.track.lastOrNull()
+        val watching = _state.value.watching
+        if (watching) {
+            val last = trackBuffer.peekLast()
+            // Cheap degree-space pre-filter before the trig-heavy haversine: at the latitudes
+            // we operate (~30-60deg) one degree of lat/lon is well over 3 ft, so a squared
+            // degree delta below ~1e-4 can't be a 3 ft move and can be skipped.
             val movedEnough = last == null ||
-                haversineFt(last.latitude, last.longitude, fix.latitude, fix.longitude) >= 3.0
-            val nextTrack = if (!current.watching) {
-                current.track
-            } else if (movedEnough) {
-                (current.track + fix).takeLast(2500)
-            } else {
-                current.track
+                prefilterFtDelta(last.latitude, last.longitude, fix.latitude, fix.longitude) >= 3.0
+            if (movedEnough) {
+                trackBuffer.addLast(fix)
+                while (trackBuffer.size > MAX_TRACK) {
+                    trackBuffer.removeFirst()
+                }
+                trackVersion.incrementAndGet()
             }
-            current.copy(
+        }
+        _state.update {
+            it.copy(
                 boat = fix,
-                track = nextTrack,
+                track = if (watching) trackPoints() else it.track,
                 distanceFt = distanceFt,
                 outsideSinceMs = outsideSinceMs,
                 lastUpdateMs = fix.timeMs
@@ -133,6 +161,9 @@ object WatchStore {
             lastUpdateMs = p.getLong(K_LAST_UPDATE_MS, 0L),
             useFeet = p.getBoolean(K_USE_FEET, true)
         )
+        // Track is not persisted; it rebuilds from live fixes after a restart.
+        trackBuffer.clear()
+        trackVersion.incrementAndGet()
     }
 
     private fun persist(state: WatchState) {
@@ -169,10 +200,23 @@ fun haversineFt(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double 
     val r = 6371000.0
     val dLat = Math.toRadians(lat2 - lat1)
     val dLon = Math.toRadians(lon2 - lon1)
-    val a = kotlin.math.sin(dLat / 2) * kotlin.math.sin(dLat / 2) +
-        kotlin.math.cos(Math.toRadians(lat1)) *
-        kotlin.math.cos(Math.toRadians(lat2)) *
-        kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
-    val c = 2 * kotlin.math.atan2(kotlin.math.sqrt(a), kotlin.math.sqrt(1 - a))
+    val a = sin(dLat / 2) * sin(dLat / 2) +
+        cos(Math.toRadians(lat1)) *
+        cos(Math.toRadians(lat2)) *
+        sin(dLon / 2) * sin(dLon / 2)
+    val c = 2 * kotlin.math.atan2(sqrt(a), sqrt(1 - a))
     return r * c * WatchState.M_TO_FT
+}
+
+/**
+ * Cheap squared-distance pre-filter in degree space. Returns an approximate feet distance
+ * using the equirectangular projection, which is good enough to decide "did we move 3 ft?"
+ * without the full haversine trig. Used before the real haversine to avoid the second
+ * per-fix haversine call.
+ */
+private fun prefilterFtDelta(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1) * cos(Math.toRadians((lat1 + lat2) / 2))
+    // 1 degree of arc ~ 60 nmi ~ 101269 ft; equirectangular meters -> feet.
+    return sqrt(dLat * dLat + dLon * dLon) * 6371000.0 * WatchState.M_TO_FT
 }
