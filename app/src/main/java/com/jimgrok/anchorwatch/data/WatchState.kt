@@ -14,7 +14,6 @@ data class WatchState(
     val alarming: Boolean = false,
     val anchor: GeoFix? = null,
     val boat: GeoFix? = null,
-    val track: List<GeoFix> = emptyList(),
     val radiusFt: Int = 100,
     val distanceFt: Double = 0.0,
     val outsideSinceMs: Long? = null,

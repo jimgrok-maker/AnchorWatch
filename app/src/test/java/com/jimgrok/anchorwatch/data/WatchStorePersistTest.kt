@@ -12,7 +12,6 @@ class WatchStorePersistTest {
             alarming = true,
             anchor = GeoFix(41.5, -81.7, 4f, 123L),
             boat = GeoFix(41.5001, -81.7002, 6f, 456L),
-            track = listOf(GeoFix(0.0, 0.0, 1f, 1L)),
             radiusFt = 150,
             distanceFt = 42.0,
             outsideSinceMs = 9_000L,
@@ -34,8 +33,6 @@ class WatchStorePersistTest {
         assertEquals(false, restored.gpsEnabled)
         assertEquals(456L, restored.lastUpdateMs)
         assertEquals(false, restored.useFeet)
-        // Track is intentionally not persisted; it rebuilds from live fixes.
-        assertEquals(emptyList<GeoFix>(), restored.track)
         assertEquals(0.0, restored.distanceFt, 0.0)
     }
 
