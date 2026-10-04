@@ -58,12 +58,21 @@ class AnchorWatchService : Service(), LocationListener {
             }
         }
 
-        val radius = intent?.getIntExtra(EXTRA_RADIUS_FT, WatchStore.snapshot().radiusFt)
-            ?: WatchStore.snapshot().radiusFt
+        val state = WatchStore.snapshot()
+        val radius = intent?.getIntExtra(EXTRA_RADIUS_FT, state.radiusFt) ?: state.radiusFt
         dwellMs = intent?.getLongExtra(EXTRA_DWELL_MS, DEFAULT_DWELL_MS) ?: DEFAULT_DWELL_MS
 
+        // Resume an existing watch after an OS restart instead of re-dropping the hook at the
+        // current position. A persisted `watching` flag with a stored hook is authoritative.
+        if (state.watching && state.anchor != null) {
+            WatchStore.setRadius(radius)
+            startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
+            startGps()
+            return START_STICKY
+        }
+
         val seed = lastKnownFix()
-        if (seed != null && !WatchStore.snapshot().watching) {
+        if (seed != null) {
             WatchStore.startWatch(seed, radius)
         } else {
             WatchStore.setRadius(radius)
@@ -77,7 +86,6 @@ class AnchorWatchService : Service(), LocationListener {
     override fun onDestroy() {
         stopGps()
         alarmPlayer.stop()
-        WatchStore.stopWatch()
         super.onDestroy()
     }
 
@@ -117,11 +125,17 @@ class AnchorWatchService : Service(), LocationListener {
     }
 
     override fun onProviderEnabled(provider: String) {
-        WatchStore.setGpsEnabled(true)
+        // Only the GPS provider is requested; ignore network/passive toggles so the
+        // "GPS OFF" lamp reflects the GPS provider, not any arbitrary provider.
+        if (provider == LocationManager.GPS_PROVIDER) {
+            WatchStore.setGpsEnabled(true)
+        }
     }
 
     override fun onProviderDisabled(provider: String) {
-        WatchStore.setGpsEnabled(false)
+        if (provider == LocationManager.GPS_PROVIDER) {
+            WatchStore.setGpsEnabled(false)
+        }
     }
 
     private fun startGps() {
