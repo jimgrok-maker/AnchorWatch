@@ -22,9 +22,8 @@ object WatchStore {
     // Bumped on every change so the UI can tell when the polyline actually changed without
     // comparing 2500 points each recomposition.
     private val trackVersion = AtomicLong(0)
-    var trackVersionLong: Long
+    val trackVersionLong: Long
         get() = trackVersion.get()
-        private set
 
     private var prefs: SharedPreferences? = null
     private var initialized = false
@@ -136,31 +135,19 @@ object WatchStore {
 
     private fun restore() {
         val p = prefs ?: return
-        val anchorLat = p.getString(K_ANCHOR_LAT, null)
-        val anchorLon = p.getString(K_ANCHOR_LON, null)
-        val boatLat = p.getString(K_BOAT_LAT, null)
-        val boatLon = p.getString(K_BOAT_LON, null)
-        _state.value = WatchState(
+        _state.value = WatchPrefsSnapshot(
             watching = p.getBoolean(K_WATCHING, false),
             alarming = p.getBoolean(K_ALARMING, false),
-            anchor = anchorLat?.let { lat ->
-                anchorLon?.let { lon ->
-                    GeoFix(lat.toDouble(), lon.toDouble(), 0f, 0L)
-                }
-            },
-            boat = boatLat?.let { lat ->
-                boatLon?.let { lon ->
-                    GeoFix(lat.toDouble(), lon.toDouble(), 0f, 0L)
-                }
-            },
-            track = emptyList(),
+            anchorLat = p.getString(K_ANCHOR_LAT, null),
+            anchorLon = p.getString(K_ANCHOR_LON, null),
+            boatLat = p.getString(K_BOAT_LAT, null),
+            boatLon = p.getString(K_BOAT_LON, null),
             radiusFt = p.getInt(K_RADIUS_FT, 100),
-            distanceFt = 0.0,
-            outsideSinceMs = p.getLong(K_OUTSIDE_SINCE_MS, -1L).takeIf { it >= 0 },
+            outsideSinceMs = p.getLong(K_OUTSIDE_SINCE_MS, -1L),
             gpsEnabled = p.getBoolean(K_GPS_ENABLED, true),
             lastUpdateMs = p.getLong(K_LAST_UPDATE_MS, 0L),
             useFeet = p.getBoolean(K_USE_FEET, true)
-        )
+        ).toWatchState()
         // Track is not persisted; it rebuilds from live fixes after a restart.
         trackBuffer.clear()
         trackVersion.incrementAndGet()
@@ -168,18 +155,19 @@ object WatchStore {
 
     private fun persist(state: WatchState) {
         val p = prefs ?: return
+        val snap = state.toPrefsSnapshot()
         p.edit()
-            .putBoolean(K_WATCHING, state.watching)
-            .putBoolean(K_ALARMING, state.alarming)
-            .putString(K_ANCHOR_LAT, state.anchor?.latitude?.toString())
-            .putString(K_ANCHOR_LON, state.anchor?.longitude?.toString())
-            .putString(K_BOAT_LAT, state.boat?.latitude?.toString())
-            .putString(K_BOAT_LON, state.boat?.longitude?.toString())
-            .putInt(K_RADIUS_FT, state.radiusFt)
-            .putLong(K_OUTSIDE_SINCE_MS, state.outsideSinceMs ?: -1L)
-            .putBoolean(K_GPS_ENABLED, state.gpsEnabled)
-            .putLong(K_LAST_UPDATE_MS, state.lastUpdateMs)
-            .putBoolean(K_USE_FEET, state.useFeet)
+            .putBoolean(K_WATCHING, snap.watching)
+            .putBoolean(K_ALARMING, snap.alarming)
+            .putString(K_ANCHOR_LAT, snap.anchorLat)
+            .putString(K_ANCHOR_LON, snap.anchorLon)
+            .putString(K_BOAT_LAT, snap.boatLat)
+            .putString(K_BOAT_LON, snap.boatLon)
+            .putInt(K_RADIUS_FT, snap.radiusFt)
+            .putLong(K_OUTSIDE_SINCE_MS, snap.outsideSinceMs)
+            .putBoolean(K_GPS_ENABLED, snap.gpsEnabled)
+            .putLong(K_LAST_UPDATE_MS, snap.lastUpdateMs)
+            .putBoolean(K_USE_FEET, snap.useFeet)
             .apply()
     }
 
@@ -194,6 +182,55 @@ object WatchStore {
     private const val K_GPS_ENABLED = "gps_enabled"
     private const val K_LAST_UPDATE_MS = "last_update_ms"
     private const val K_USE_FEET = "use_feet"
+}
+
+/** Typed fields written by [WatchStore] persist and read back on restore. */
+internal data class WatchPrefsSnapshot(
+    val watching: Boolean,
+    val alarming: Boolean,
+    val anchorLat: String?,
+    val anchorLon: String?,
+    val boatLat: String?,
+    val boatLon: String?,
+    val radiusFt: Int,
+    val outsideSinceMs: Long,
+    val gpsEnabled: Boolean,
+    val lastUpdateMs: Long,
+    val useFeet: Boolean,
+)
+
+internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapshot(
+    watching = watching,
+    alarming = alarming,
+    anchorLat = anchor?.latitude?.toString(),
+    anchorLon = anchor?.longitude?.toString(),
+    boatLat = boat?.latitude?.toString(),
+    boatLon = boat?.longitude?.toString(),
+    radiusFt = radiusFt,
+    outsideSinceMs = outsideSinceMs ?: -1L,
+    gpsEnabled = gpsEnabled,
+    lastUpdateMs = lastUpdateMs,
+    useFeet = useFeet,
+)
+
+internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
+    watching = watching,
+    alarming = alarming,
+    anchor = parseStoredFix(anchorLat, anchorLon),
+    boat = parseStoredFix(boatLat, boatLon),
+    track = emptyList(),
+    radiusFt = radiusFt,
+    distanceFt = 0.0,
+    outsideSinceMs = outsideSinceMs.takeIf { it >= 0 },
+    gpsEnabled = gpsEnabled,
+    lastUpdateMs = lastUpdateMs,
+    useFeet = useFeet,
+)
+
+private fun parseStoredFix(lat: String?, lon: String?): GeoFix? {
+    val la = lat?.toDoubleOrNull() ?: return null
+    val lo = lon?.toDoubleOrNull() ?: return null
+    return GeoFix(la, lo, 0f, 0L)
 }
 
 fun haversineFt(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {

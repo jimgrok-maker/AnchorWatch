@@ -20,6 +20,7 @@ import com.jimgrok.anchorwatch.AnchorWatchApp
 import com.jimgrok.anchorwatch.MainActivity
 import com.jimgrok.anchorwatch.R
 import com.jimgrok.anchorwatch.alarm.AlarmPlayer
+import com.jimgrok.anchorwatch.alarm.shouldFireDragAlarm
 import com.jimgrok.anchorwatch.data.GeoFix
 import com.jimgrok.anchorwatch.data.WatchState
 import com.jimgrok.anchorwatch.data.WatchStore
@@ -159,11 +160,16 @@ class AnchorWatchService : Service(), LocationListener {
      */
     private fun evaluateAlarm() {
         val state = WatchStore.snapshot()
-        if (!state.watching) return
-        val outsideSince = state.outsideSinceMs ?: return
-        val shouldAlarm = (System.currentTimeMillis() - outsideSince) >= dwellMs
-        if (shouldAlarm && !state.alarming) {
-            Log.i(TAG, "Alarm firing: outside for ${System.currentTimeMillis() - outsideSince}ms (dwell=${dwellMs}ms)")
+        val now = System.currentTimeMillis()
+        if (shouldFireDragAlarm(
+                watching = state.watching,
+                alreadyAlarming = state.alarming,
+                outsideSinceMs = state.outsideSinceMs,
+                nowMs = now,
+                dwellMs = dwellMs,
+            )
+        ) {
+            Log.i(TAG, "Alarm firing: outside for ${now - (state.outsideSinceMs ?: now)}ms (dwell=${dwellMs}ms)")
             WatchStore.setAlarming(true)
             alarmPlayer.start()
         }
