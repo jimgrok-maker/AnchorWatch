@@ -224,7 +224,6 @@ fun WatchScreen() {
                 readiness = readiness,
                 onGpsLamp = {
                     if (!readiness.gps) runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
-                    openAppSettings(context)
                 },
                 onBgLamp = { openAppSettings(context) },
                 onBatteryLamp = {
@@ -400,7 +399,7 @@ private fun ControlsCard(
                 TextButton(onClick = { onUnits(!state.useFeet) }) { Text(if (state.useFeet) "ft" else "m") }
             }
             Text(formatDistance(state.radiusFt.toDouble(), state.useFeet), fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
-            Slider(value = state.radiusFt.toFloat(), onValueChange = { onRadius(it.roundToInt()) }, valueRange = 25f..500f, steps = 18)
+            Slider(value = state.radiusFt.toFloat(), onValueChange = { onRadius(it.roundToInt()) }, valueRange = 20f..500f)
             Text("Rule of thumb: rode length + 2x GPS error. Dwell ${dwellSec}s outside the circle before the alarm.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
             Slider(value = dwellSec.toFloat(), onValueChange = { onDwell(it.roundToInt().coerceIn(3, 20)) }, valueRange = 3f..20f, steps = 16)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -450,6 +449,7 @@ private fun ControlsCard(
     }
 }
 
+// Input is always feet. useFeet only selects the display unit.
 private fun formatDistance(feet: Double, useFeet: Boolean): String {
     return if (useFeet) "${feet.roundToInt()} ft" else "${(feet * WatchState.FT_TO_M).roundToInt()} m"
 }
