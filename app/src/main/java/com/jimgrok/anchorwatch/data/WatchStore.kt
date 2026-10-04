@@ -44,7 +44,7 @@ object WatchStore {
     }
 
     fun setRadius(feet: Int) {
-        _state.update { it.copy(radiusFt = feet.coerceIn(20, 600)) }
+        _state.update { it.copy(radiusFt = feet.coerceIn(20, 500)) }
         persist(_state.value)
     }
 
@@ -54,12 +54,14 @@ object WatchStore {
     }
 
     fun startWatch(anchor: GeoFix, radiusFt: Int) {
+        trackBuffer.clear()
+        trackBuffer.addLast(anchor)
+        trackVersion.incrementAndGet()
         _state.value = WatchState(
             watching = true,
             alarming = false,
             anchor = anchor,
             boat = anchor,
-            track = trackPoints(),
             radiusFt = radiusFt,
             distanceFt = 0.0,
             outsideSinceMs = null,
@@ -67,9 +69,6 @@ object WatchStore {
             lastUpdateMs = anchor.timeMs,
             useFeet = _state.value.useFeet
         )
-        trackBuffer.clear()
-        trackBuffer.addLast(anchor)
-        trackVersion.incrementAndGet()
         persist(_state.value)
     }
 
@@ -91,6 +90,11 @@ object WatchStore {
         persist(_state.value)
     }
 
+    fun clearOutsideSince() {
+        _state.update { it.copy(outsideSinceMs = null) }
+        persist(_state.value)
+    }
+
     fun setGpsEnabled(enabled: Boolean) {
         _state.update { it.copy(gpsEnabled = enabled) }
     }
@@ -99,9 +103,6 @@ object WatchStore {
         val watching = _state.value.watching
         if (watching) {
             val last = trackBuffer.peekLast()
-            // Cheap degree-space pre-filter before the trig-heavy haversine: at the latitudes
-            // we operate (~30-60deg) one degree of lat/lon is well over 3 ft, so a squared
-            // degree delta below ~1e-4 can't be a 3 ft move and can be skipped.
             val movedEnough = last == null ||
                 prefilterFtDelta(last.latitude, last.longitude, fix.latitude, fix.longitude) >= 3.0
             if (movedEnough) {
@@ -115,7 +116,6 @@ object WatchStore {
         _state.update {
             it.copy(
                 boat = fix,
-                track = if (watching) trackPoints() else it.track,
                 distanceFt = distanceFt,
                 outsideSinceMs = outsideSinceMs,
                 lastUpdateMs = fix.timeMs
@@ -218,7 +218,6 @@ internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
     alarming = alarming,
     anchor = parseStoredFix(anchorLat, anchorLon),
     boat = parseStoredFix(boatLat, boatLon),
-    track = emptyList(),
     radiusFt = radiusFt,
     distanceFt = 0.0,
     outsideSinceMs = outsideSinceMs.takeIf { it >= 0 },
@@ -246,10 +245,8 @@ fun haversineFt(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double 
 }
 
 /**
- * Cheap squared-distance pre-filter in degree space. Returns an approximate feet distance
- * using the equirectangular projection, which is good enough to decide "did we move 3 ft?"
- * without the full haversine trig. Used before the real haversine to avoid the second
- * per-fix haversine call.
+ * Equirectangular approximate feet distance. Used as a cheap move-threshold gate before
+ * appending a fix to the track buffer (skip points that moved less than 3 ft).
  */
 private fun prefilterFtDelta(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val dLat = Math.toRadians(lat2 - lat1)
