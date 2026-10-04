@@ -4,7 +4,11 @@ import android.graphics.Color as AndroidColor
 import android.graphics.Paint
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
@@ -35,7 +39,7 @@ fun OsmMap(
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val holder = remember { MapOverlays() }
-    var lastTrackVersion by remember { androidx.compose.runtime.mutableLongStateOf(-1L) }
+    var lastTrackVersion by remember { mutableLongStateOf(-1L) }
     var lastFollowKey by remember { mutableStateOf<String?>(null) }
     var lastAlarming by remember { mutableStateOf(false) }
 
