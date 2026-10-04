@@ -57,6 +57,7 @@ class AnchorWatchService : Service(), LocationListener {
             }
             ACTION_SILENCE -> {
                 WatchStore.setAlarming(false)
+                WatchStore.clearOutsideSince()
                 alarmPlayer.stop()
                 startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
                 return START_STICKY
@@ -139,8 +140,6 @@ class AnchorWatchService : Service(), LocationListener {
     }
 
     override fun onProviderEnabled(provider: String) {
-        // Only the GPS provider is requested; ignore network/passive toggles so the
-        // "GPS OFF" lamp reflects the GPS provider, not any arbitrary provider.
         if (provider == LocationManager.GPS_PROVIDER) {
             WatchStore.setGpsEnabled(true)
         }
@@ -173,8 +172,6 @@ class AnchorWatchService : Service(), LocationListener {
             WatchStore.setAlarming(true)
             alarmPlayer.start()
         }
-        // Refresh the notification so the "DRAGGING" state is shown as soon as the alarm
-        // fires, even if no GPS fix arrived this tick.
         startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
     }
 
