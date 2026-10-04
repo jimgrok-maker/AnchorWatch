@@ -13,7 +13,6 @@ import android.location.LocationManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.Message
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.jimgrok.anchorwatch.AnchorWatchApp
@@ -159,13 +158,14 @@ class AnchorWatchService : Service(), LocationListener {
         val state = WatchStore.snapshot()
         if (!state.watching) return
         val outsideSince = state.outsideSinceMs ?: return
-        val now = System.currentTimeMillis()
-        val shouldAlarm = (now - outsideSince) >= dwellMs
+        val shouldAlarm = (System.currentTimeMillis() - outsideSince) >= dwellMs
         if (shouldAlarm && !state.alarming) {
             WatchStore.setAlarming(true)
             alarmPlayer.start()
         }
-        startForeground(NOTIF_ID, buildNotification(state.copy(alarming = WatchStore.snapshot().alarming)))
+        // Refresh the notification so the "DRAGGING" state is shown as soon as the alarm
+        // fires, even if no GPS fix arrived this tick.
+        startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
     }
 
     private fun startAlarmTicker() {
