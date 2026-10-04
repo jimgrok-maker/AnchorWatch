@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Log
 
 class AlarmPlayer(private val context: Context) {
     private var player: MediaPlayer? = null
@@ -25,6 +26,7 @@ class AlarmPlayer(private val context: Context) {
         val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         if (uri == null) {
+            Log.w(TAG, "No default alarm/notify ringtone URI; vibration only")
             preparing = false
             vibrate()
             return
@@ -44,13 +46,15 @@ class AlarmPlayer(private val context: Context) {
                 if (this@AlarmPlayer.player != null) return@setOnPreparedListener
                 try {
                     start()
-                } catch (_: IllegalStateException) {
+                } catch (e: IllegalStateException) {
+                    Log.w(TAG, "MediaPlayer.start() failed in onPrepared", e)
                     releaseQuietly()
                     return@setOnPreparedListener
                 }
                 this@AlarmPlayer.player = this
             }
-            setOnErrorListener { _, _, _ ->
+            setOnErrorListener { _, what, extra ->
+                Log.w(TAG, "MediaPlayer onError what=$what extra=$extra")
                 preparing = false
                 releaseQuietly()
                 true
@@ -61,7 +65,8 @@ class AlarmPlayer(private val context: Context) {
             // prepareAsync() so the (potentially blocking) ringtone decode never stalls the
             // main-thread location callback that fires the alarm.
             mp.prepareAsync()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "setDataSource/prepareAsync failed; falling back to vibration", e)
             preparing = false
             mp.release()
         }
@@ -76,11 +81,13 @@ class AlarmPlayer(private val context: Context) {
     private fun MediaPlayer.releaseQuietly() {
         try {
             if (isPlaying) stop()
-        } catch (_: IllegalStateException) {
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "MediaPlayer.stop() in releaseQuietly", e)
         }
         try {
             release()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaPlayer.release() in releaseQuietly", e)
         }
     }
 
@@ -89,14 +96,20 @@ class AlarmPlayer(private val context: Context) {
         player?.let { p ->
             try {
                 if (p.isPlaying) p.stop()
-            } catch (_: IllegalStateException) {
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "MediaPlayer.stop() in stop()", e)
             }
             try {
                 p.release()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaPlayer.release() in stop()", e)
             }
         }
         player = null
         vibrator?.cancel()
+    }
+
+    companion object {
+        private const val TAG = "AlarmPlayer"
     }
 }
