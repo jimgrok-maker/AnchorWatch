@@ -9,7 +9,9 @@ import org.osmdroid.config.Configuration
 class AnchorWatchApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        Configuration.getInstance().userAgentValue = packageName
+        // Single source of truth for the OSMDroid user agent: the real versionName from
+        // BuildConfig, not a hardcoded string that drifts over time.
+        Configuration.getInstance().userAgentValue = BuildConfig.VERSION_NAME
         Configuration.getInstance().load(
             this,
             getSharedPreferences("osmdroid", MODE_PRIVATE)
