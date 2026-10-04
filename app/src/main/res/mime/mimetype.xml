@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Map .wav to a MIME type so MediaPlayer.setDataSource() can play the bundled
-     fallback alarm from res/raw without the "unknown file type" error. -->
-<mime-types xmlns:android="http://schemas.android.com/apk/res/android">
-    <type extension="wav" mime-type="audio/x-wav" />
-</mime-types>
