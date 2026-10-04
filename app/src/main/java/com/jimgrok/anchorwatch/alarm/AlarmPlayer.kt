@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import com.jimgrok.anchorwatch.R
 
 class AlarmPlayer(private val context: Context) {
     private var player: MediaPlayer? = null
@@ -23,6 +22,13 @@ class AlarmPlayer(private val context: Context) {
     fun start() {
         if (player != null || preparing) return
         preparing = true
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        if (uri == null) {
+            preparing = false
+            vibrate()
+            return
+        }
         val mp = MediaPlayer().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()
@@ -46,45 +52,25 @@ class AlarmPlayer(private val context: Context) {
             }
             setOnErrorListener { _, _, _ ->
                 preparing = false
-                // Default ringtone is null/unusable — fall back to the bundled alarm so
-                // the watch is never silent.
-                if (!hasDataSource) {
-                    releaseQuietly()
-                    start()
-                } else {
-                    releaseQuietly()
-                }
+                releaseQuietly()
                 true
             }
         }
-        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         try {
-            if (uri != null) {
-                mp.setDataSource(context, uri)
-            } else {
-                setFallbackDataSource(mp)
-            }
+            mp.setDataSource(context, uri)
             // prepareAsync() so the (potentially blocking) ringtone decode never stalls the
             // main-thread location callback that fires the alarm.
             mp.prepareAsync()
         } catch (_: Exception) {
-            setFallbackDataSource(mp)
-            try {
-                mp.prepareAsync()
-            } catch (_: Exception) {
-                preparing = false
-                mp.release()
-                player = null
-            }
+            preparing = false
+            mp.release()
         }
-        val pattern = longArrayOf(0, 600, 250, 600, 250, 900)
-        vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+        vibrate()
     }
 
-    private fun setFallbackDataSource(mp: MediaPlayer) {
-        // A bundled alarm guarantees the watch can always make noise, even on a device whose
-        // default ringtone is null or set to a silent tone.
-        mp.setDataSource(context, context.resources.openRawResourceFd(R.raw.alarm_fallback))
+    private fun vibrate() {
+        val pattern = longArrayOf(0, 600, 250, 600, 250, 900)
+        vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
     }
 
     private fun MediaPlayer.releaseQuietly() {
