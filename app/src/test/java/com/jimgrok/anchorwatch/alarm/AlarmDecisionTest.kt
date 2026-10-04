@@ -10,79 +10,51 @@ class AlarmDecisionTest {
 
     @Test
     fun doesNotFireBeforeDwell() {
-        assertFalse(
-            shouldFireDragAlarm(
-                watching = true,
-                alreadyAlarming = false,
-                outsideSinceMs = outsideSince,
-                nowMs = outsideSince + dwell - 1,
-                dwellMs = dwell,
-            )
-        )
+        assertFalse(fire(nowMs = outsideSince + dwell - 1))
     }
 
     @Test
     fun firesAtExactDwell() {
-        assertTrue(
-            shouldFireDragAlarm(
-                watching = true,
-                alreadyAlarming = false,
-                outsideSinceMs = outsideSince,
-                nowMs = outsideSince + dwell,
-                dwellMs = dwell,
-            )
-        )
+        assertTrue(fire(nowMs = outsideSince + dwell))
     }
 
     @Test
     fun firesAfterDwell() {
-        assertTrue(
-            shouldFireDragAlarm(
-                watching = true,
-                alreadyAlarming = false,
-                outsideSinceMs = outsideSince,
-                nowMs = outsideSince + dwell + 5_000,
-                dwellMs = dwell,
-            )
-        )
+        assertTrue(fire(nowMs = outsideSince + dwell + 5_000))
     }
 
     @Test
     fun doesNotFireWhenNotWatching() {
-        assertFalse(
-            shouldFireDragAlarm(
-                watching = false,
-                alreadyAlarming = false,
-                outsideSinceMs = outsideSince,
-                nowMs = outsideSince + dwell,
-                dwellMs = dwell,
-            )
-        )
+        assertFalse(fire(watching = false, nowMs = outsideSince + dwell))
     }
 
     @Test
     fun doesNotRefireWhenAlreadyAlarming() {
-        assertFalse(
-            shouldFireDragAlarm(
-                watching = true,
-                alreadyAlarming = true,
-                outsideSinceMs = outsideSince,
-                nowMs = outsideSince + dwell,
-                dwellMs = dwell,
-            )
-        )
+        assertFalse(fire(alreadyAlarming = true, nowMs = outsideSince + dwell))
     }
 
     @Test
     fun doesNotFireWithoutOutsideSince() {
-        assertFalse(
-            shouldFireDragAlarm(
-                watching = true,
-                alreadyAlarming = false,
-                outsideSinceMs = null,
-                nowMs = outsideSince + dwell,
-                dwellMs = dwell,
-            )
-        )
+        assertFalse(fire(outsideSinceMs = null, nowMs = outsideSince + dwell))
     }
+
+    @Test
+    fun doesNotFireWhileSilencedForThisExcursion() {
+        assertFalse(fire(silenced = true, nowMs = outsideSince + dwell))
+    }
+
+    private fun fire(
+        watching: Boolean = true,
+        alreadyAlarming: Boolean = false,
+        silenced: Boolean = false,
+        outsideSinceMs: Long? = outsideSince,
+        nowMs: Long,
+    ) = shouldFireDragAlarm(
+        watching = watching,
+        alreadyAlarming = alreadyAlarming,
+        silenced = silenced,
+        outsideSinceMs = outsideSinceMs,
+        nowMs = nowMs,
+        dwellMs = dwell,
+    )
 }

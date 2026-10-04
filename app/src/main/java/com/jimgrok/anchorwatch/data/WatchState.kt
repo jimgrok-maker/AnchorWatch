@@ -12,6 +12,7 @@ data class GeoFix(
 data class WatchState(
     val watching: Boolean = false,
     val alarming: Boolean = false,
+    val silenced: Boolean = false,
     val anchor: GeoFix? = null,
     val boat: GeoFix? = null,
     val radiusFt: Int = 100,

@@ -13,6 +13,7 @@ import android.util.Log
 class AlarmPlayer(private val context: Context) {
     private var player: MediaPlayer? = null
     private var preparing = false
+    private var dismissed = false
     private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         context.getSystemService(VibratorManager::class.java)?.defaultVibrator
     } else {
@@ -22,6 +23,7 @@ class AlarmPlayer(private val context: Context) {
 
     fun start() {
         if (player != null || preparing) return
+        dismissed = false
         preparing = true
         val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -42,8 +44,10 @@ class AlarmPlayer(private val context: Context) {
             setVolume(1f, 1f)
             setOnPreparedListener {
                 preparing = false
-                // If the alarm was dismissed while we were still preparing, bail out.
-                if (this@AlarmPlayer.player != null) return@setOnPreparedListener
+                if (dismissed) {
+                    releaseQuietly()
+                    return@setOnPreparedListener
+                }
                 try {
                     start()
                 } catch (e: IllegalStateException) {
@@ -62,8 +66,6 @@ class AlarmPlayer(private val context: Context) {
         }
         try {
             mp.setDataSource(context, uri)
-            // prepareAsync() so the (potentially blocking) ringtone decode never stalls the
-            // main-thread location callback that fires the alarm.
             mp.prepareAsync()
         } catch (e: Exception) {
             Log.w(TAG, "setDataSource/prepareAsync failed; falling back to vibration", e)
@@ -92,6 +94,7 @@ class AlarmPlayer(private val context: Context) {
     }
 
     fun stop() {
+        dismissed = true
         preparing = false
         player?.let { p ->
             try {
