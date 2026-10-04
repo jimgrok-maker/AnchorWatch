@@ -15,12 +15,8 @@ object WatchStore {
     private val _state = MutableStateFlow(WatchState())
     val state: StateFlow<WatchState> = _state.asStateFlow()
 
-    // Track is a bounded ring buffer so appending a fix is O(1) instead of copying the whole
-    // list every fix (the map only needs the visible track, and a 2500-point line is plenty).
     private val trackBuffer = java.util.ArrayDeque<GeoFix>()
     private const val MAX_TRACK = 2500
-    // Bumped on every change so the UI can tell when the polyline actually changed without
-    // comparing 2500 points each recomposition.
     private val trackVersion = AtomicLong(0)
     val trackVersionLong: Long
         get() = trackVersion.get()
@@ -32,10 +28,6 @@ object WatchStore {
 
     fun trackPoints(): List<GeoFix> = ArrayList(trackBuffer)
 
-    /**
-     * Load the persisted watch state into memory. Call this from Application.onCreate so
-     * the state is restored before the foreground service is (re)started by the OS.
-     */
     fun init(context: Context) {
         if (initialized) return
         prefs = context.applicationContext.getSharedPreferences("anchor_watch", Context.MODE_PRIVATE)
@@ -60,6 +52,7 @@ object WatchStore {
         _state.value = WatchState(
             watching = true,
             alarming = false,
+            silenced = false,
             anchor = anchor,
             boat = anchor,
             radiusFt = radiusFt,
@@ -77,6 +70,7 @@ object WatchStore {
             it.copy(
                 watching = false,
                 alarming = false,
+                silenced = false,
                 outsideSinceMs = null
             )
         }
@@ -90,8 +84,14 @@ object WatchStore {
         persist(_state.value)
     }
 
-    fun clearOutsideSince() {
-        _state.update { it.copy(outsideSinceMs = null) }
+    /** Mute this excursion. A new dwell starts only after the boat is back inside. */
+    fun silenceCurrentDrag() {
+        _state.update { it.copy(alarming = false, silenced = true, outsideSinceMs = null) }
+        persist(_state.value)
+    }
+
+    fun clearSilence() {
+        _state.update { it.copy(silenced = false) }
         persist(_state.value)
     }
 
@@ -121,8 +121,6 @@ object WatchStore {
                 lastUpdateMs = fix.timeMs
             )
         }
-        // Persist on every fix (1 Hz): cheap, and keeps the hook, radius, dwell anchor and
-        // outsideSinceMs across an OS process restart so the watch resumes, not restarts.
         persist(_state.value)
     }
 
@@ -138,6 +136,7 @@ object WatchStore {
         _state.value = WatchPrefsSnapshot(
             watching = p.getBoolean(K_WATCHING, false),
             alarming = p.getBoolean(K_ALARMING, false),
+            silenced = p.getBoolean(K_SILENCED, false),
             anchorLat = p.getString(K_ANCHOR_LAT, null),
             anchorLon = p.getString(K_ANCHOR_LON, null),
             boatLat = p.getString(K_BOAT_LAT, null),
@@ -148,7 +147,6 @@ object WatchStore {
             lastUpdateMs = p.getLong(K_LAST_UPDATE_MS, 0L),
             useFeet = p.getBoolean(K_USE_FEET, true)
         ).toWatchState()
-        // Track is not persisted; it rebuilds from live fixes after a restart.
         trackBuffer.clear()
         trackVersion.incrementAndGet()
     }
@@ -159,6 +157,7 @@ object WatchStore {
         p.edit()
             .putBoolean(K_WATCHING, snap.watching)
             .putBoolean(K_ALARMING, snap.alarming)
+            .putBoolean(K_SILENCED, snap.silenced)
             .putString(K_ANCHOR_LAT, snap.anchorLat)
             .putString(K_ANCHOR_LON, snap.anchorLon)
             .putString(K_BOAT_LAT, snap.boatLat)
@@ -173,6 +172,7 @@ object WatchStore {
 
     private const val K_WATCHING = "watching"
     private const val K_ALARMING = "alarming"
+    private const val K_SILENCED = "silenced"
     private const val K_ANCHOR_LAT = "anchor_lat"
     private const val K_ANCHOR_LON = "anchor_lon"
     private const val K_BOAT_LAT = "boat_lat"
@@ -184,10 +184,10 @@ object WatchStore {
     private const val K_USE_FEET = "use_feet"
 }
 
-/** Typed fields written by [WatchStore] persist and read back on restore. */
 internal data class WatchPrefsSnapshot(
     val watching: Boolean,
     val alarming: Boolean,
+    val silenced: Boolean = false,
     val anchorLat: String?,
     val anchorLon: String?,
     val boatLat: String?,
@@ -202,6 +202,7 @@ internal data class WatchPrefsSnapshot(
 internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapshot(
     watching = watching,
     alarming = alarming,
+    silenced = silenced,
     anchorLat = anchor?.latitude?.toString(),
     anchorLon = anchor?.longitude?.toString(),
     boatLat = boat?.latitude?.toString(),
@@ -216,6 +217,7 @@ internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapsh
 internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
     watching = watching,
     alarming = alarming,
+    silenced = silenced,
     anchor = parseStoredFix(anchorLat, anchorLon),
     boat = parseStoredFix(boatLat, boatLon),
     radiusFt = radiusFt,
@@ -244,13 +246,9 @@ fun haversineFt(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double 
     return r * c * WatchState.M_TO_FT
 }
 
-/**
- * Equirectangular approximate feet distance. Used as a cheap move-threshold gate before
- * appending a fix to the track buffer (skip points that moved less than 3 ft).
- */
+/** Equirectangular approximate feet distance used as a 3 ft move gate before appending to the track. */
 private fun prefilterFtDelta(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val dLat = Math.toRadians(lat2 - lat1)
     val dLon = Math.toRadians(lon2 - lon1) * cos(Math.toRadians((lat1 + lat2) / 2))
-    // 1 degree of arc ~ 60 nmi ~ 101269 ft; equirectangular meters -> feet.
     return sqrt(dLat * dLat + dLon * dLon) * 6371000.0 * WatchState.M_TO_FT
 }

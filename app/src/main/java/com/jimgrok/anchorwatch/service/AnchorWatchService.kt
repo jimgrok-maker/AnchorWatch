@@ -56,8 +56,7 @@ class AnchorWatchService : Service(), LocationListener {
                 return START_NOT_STICKY
             }
             ACTION_SILENCE -> {
-                WatchStore.setAlarming(false)
-                WatchStore.clearOutsideSince()
+                WatchStore.silenceCurrentDrag()
                 alarmPlayer.stop()
                 startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
                 return START_STICKY
@@ -74,8 +73,6 @@ class AnchorWatchService : Service(), LocationListener {
         val radius = intent?.getIntExtra(EXTRA_RADIUS_FT, state.radiusFt) ?: state.radiusFt
         dwellMs = intent?.getLongExtra(EXTRA_DWELL_MS, DEFAULT_DWELL_MS) ?: DEFAULT_DWELL_MS
 
-        // Resume an existing watch after an OS restart instead of re-dropping the hook at the
-        // current position. A persisted `watching` flag with a stored hook is authoritative.
         if (state.watching && state.anchor != null) {
             Log.i(TAG, "Resuming persisted watch (anchor=${state.anchor.latitude},${state.anchor.longitude}, radius=${state.radiusFt}ft)")
             WatchStore.setRadius(radius)
@@ -126,12 +123,13 @@ class AnchorWatchService : Service(), LocationListener {
         )
         val now = System.currentTimeMillis()
         val outside = distanceFt > state.radiusFt
-        // outsideSinceMs is the wall-clock moment the boat first crossed the circle; it is
-        // preserved while outside and cleared the moment the boat comes back inside. The alarm
-        // decision itself is made by the ticker (see evaluateAlarm), not here, so it is not
-        // dependent on how frequently GPS fixes arrive.
+        if (!outside && state.silenced) {
+            WatchStore.clearSilence()
+        }
+        val silenced = if (!outside) false else state.silenced
         val outsideSince = when {
             !outside -> null
+            silenced -> null
             state.outsideSinceMs != null -> state.outsideSinceMs
             else -> now
         }
@@ -140,29 +138,20 @@ class AnchorWatchService : Service(), LocationListener {
     }
 
     override fun onProviderEnabled(provider: String) {
-        if (provider == LocationManager.GPS_PROVIDER) {
-            WatchStore.setGpsEnabled(true)
-        }
+        if (provider == LocationManager.GPS_PROVIDER) WatchStore.setGpsEnabled(true)
     }
 
     override fun onProviderDisabled(provider: String) {
-        if (provider == LocationManager.GPS_PROVIDER) {
-            WatchStore.setGpsEnabled(false)
-        }
+        if (provider == LocationManager.GPS_PROVIDER) WatchStore.setGpsEnabled(false)
     }
 
-    /**
-     * Re-evaluate the alarm on a fixed wall-clock cadence rather than only on GPS fixes.
-     * This keeps the dwell countdown correct when the GPS fix rate drops (e.g. poor sky):
-     * the boat's last known position and the wall-clock outsideSinceMs are enough to know the
-     * boat has been outside longer than the dwell, even before the next fix arrives.
-     */
     private fun evaluateAlarm() {
         val state = WatchStore.snapshot()
         val now = System.currentTimeMillis()
         if (shouldFireDragAlarm(
                 watching = state.watching,
                 alreadyAlarming = state.alarming,
+                silenced = state.silenced,
                 outsideSinceMs = state.outsideSinceMs,
                 nowMs = now,
                 dwellMs = dwellMs,
@@ -247,35 +236,19 @@ class AnchorWatchService : Service(), LocationListener {
 
     private fun buildNotification(state: WatchState): Notification {
         val open = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
+            this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val stop = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, AnchorWatchService::class.java).setAction(ACTION_STOP),
+            this, 1, Intent(this, AnchorWatchService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val silence = PendingIntent.getService(
-            this,
-            2,
-            Intent(this, AnchorWatchService::class.java).setAction(ACTION_SILENCE),
+            this, 2, Intent(this, AnchorWatchService::class.java).setAction(ACTION_SILENCE),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
-        val dist = if (state.useFeet) {
-            "${state.distanceFt.toInt()} ft"
-        } else {
-            "${state.distanceM.toInt()} m"
-        }
-        val radius = if (state.useFeet) {
-            "${state.radiusFt} ft"
-        } else {
-            "${state.radiusM.toInt()} m"
-        }
-
+        val dist = if (state.useFeet) "${state.distanceFt.toInt()} ft" else "${state.distanceM.toInt()} m"
+        val radius = if (state.useFeet) "${state.radiusFt} ft" else "${state.radiusM.toInt()} m"
         return if (state.alarming) {
             NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_ALARM)
                 .setSmallIcon(R.drawable.ic_stat_anchor)
@@ -287,18 +260,18 @@ class AnchorWatchService : Service(), LocationListener {
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setFullScreenIntent(open, true)
                 .addAction(0, "Silence", silence)
-                .addAction(0, "Weigh anchor", stop)
+                .addAction(0, "Stop alarm", stop)
                 .build()
         } else {
             NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_WATCH)
                 .setSmallIcon(R.drawable.ic_stat_anchor)
                 .setContentTitle(getString(R.string.watch_notification_title))
-                .setContentText("Swing $dist / $radius")
+                .setContentText(if (state.silenced) "Silenced until back inside  /  $dist / $radius" else "Swing $dist / $radius")
                 .setContentIntent(open)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setSilent(true)
-                .addAction(0, "Weigh anchor", stop)
+                .addAction(0, "Stop alarm", stop)
                 .build()
         }
     }
@@ -325,24 +298,18 @@ class AnchorWatchService : Service(), LocationListener {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, AnchorWatchService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
+            context.startService(Intent(context, AnchorWatchService::class.java).setAction(ACTION_STOP))
         }
 
         fun silence(context: Context) {
-            val intent = Intent(context, AnchorWatchService::class.java).apply {
-                action = ACTION_SILENCE
-            }
-            context.startService(intent)
+            context.startService(Intent(context, AnchorWatchService::class.java).setAction(ACTION_SILENCE))
         }
 
         fun testAlarm(context: Context) {
-            val intent = Intent(context, AnchorWatchService::class.java).apply {
-                action = ACTION_TEST_ALARM
-            }
-            ContextCompat.startForegroundService(context, intent)
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AnchorWatchService::class.java).setAction(ACTION_TEST_ALARM)
+            )
         }
     }
 }
