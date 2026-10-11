@@ -75,6 +75,31 @@ class AlarmPlayer(private val context: Context) {
         vibrate()
     }
 
+    /** One-shot warning for a lost GPS fix. Does not start the looping drag siren. */
+    fun warnOnce() {
+        val pattern = longArrayOf(0, 400, 200, 400)
+        vibrator?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        if (uri == null) return
+        runCatching {
+            val mp = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                isLooping = false
+                setOnCompletionListener { release() }
+                setOnErrorListener { _, _, _ -> release(); true }
+            }
+            mp.setDataSource(context, uri)
+            mp.prepareAsync()
+            mp.setOnPreparedListener { it.start() }
+        }.onFailure { Log.w(TAG, "warnOnce failed", it) }
+    }
+
     private fun vibrate() {
         val pattern = longArrayOf(0, 600, 250, 600, 250, 900)
         vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))

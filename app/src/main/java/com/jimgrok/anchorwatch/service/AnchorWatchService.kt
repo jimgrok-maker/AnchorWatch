@@ -25,6 +25,7 @@ import com.jimgrok.anchorwatch.data.GeoFix
 import com.jimgrok.anchorwatch.data.WatchState
 import com.jimgrok.anchorwatch.data.WatchStore
 import com.jimgrok.anchorwatch.data.haversineFt
+import com.jimgrok.anchorwatch.data.isAccurateEnough
 
 class AnchorWatchService : Service(), LocationListener {
 
@@ -83,11 +84,11 @@ class AnchorWatchService : Service(), LocationListener {
         }
 
         val seed = lastKnownFix()
-        if (seed != null) {
+        if (seed != null && isAccurateEnough(seed, radius)) {
             WatchStore.startWatch(seed, radius)
         } else {
-            Log.w(TAG, "No last-known fix and no persisted anchor; watch started without a hook")
-            WatchStore.setRadius(radius)
+            Log.i(TAG, "No accurate fix yet; waiting for the first good GPS fix to drop the hook")
+            WatchStore.startWatchPending(radius)
         }
 
         startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
@@ -117,17 +118,29 @@ class AnchorWatchService : Service(), LocationListener {
             WatchStore.previewFix(fix)
             return
         }
-        val anchor = state.anchor ?: return
+        if (state.anchor == null) {
+            if (isAccurateEnough(fix, state.radiusFt)) {
+                Log.i(TAG, "First accurate fix; dropping the hook")
+                WatchStore.startWatch(fix, state.radiusFt)
+            } else {
+                WatchStore.setPendingBoat(fix)
+            }
+            startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
+            return
+        }
+        val anchor = state.anchor
         val distanceFt = haversineFt(
             anchor.latitude, anchor.longitude, fix.latitude, fix.longitude
         )
         val now = System.currentTimeMillis()
-        val outside = distanceFt > state.radiusFt
-        if (!outside && state.silenced) {
+        val accurate = isAccurateEnough(fix, state.radiusFt)
+        val outside = accurate && distanceFt > state.radiusFt
+        if (!outside && state.silenced && accurate) {
             WatchStore.clearSilence()
         }
         val silenced = if (!outside) false else state.silenced
         val outsideSince = when {
+            !accurate -> state.outsideSinceMs
             !outside -> null
             silenced -> null
             state.outsideSinceMs != null -> state.outsideSinceMs
@@ -148,6 +161,13 @@ class AnchorWatchService : Service(), LocationListener {
     private fun evaluateAlarm() {
         val state = WatchStore.snapshot()
         val now = System.currentTimeMillis()
+        if (state.watching && state.anchor != null && !state.gpsLost &&
+            state.lastUpdateMs > 0 && now - state.lastUpdateMs > GPS_LOST_MS
+        ) {
+            Log.w(TAG, "GPS lost: no fix for ${now - state.lastUpdateMs}ms")
+            WatchStore.setGpsLost(true)
+            alarmPlayer.warnOnce()
+        }
         if (shouldFireDragAlarm(
                 watching = state.watching,
                 alreadyAlarming = state.alarming,
@@ -249,30 +269,57 @@ class AnchorWatchService : Service(), LocationListener {
         )
         val dist = if (state.useFeet) "${state.distanceFt.toInt()} ft" else "${state.distanceM.toInt()} m"
         val radius = if (state.useFeet) "${state.radiusFt} ft" else "${state.radiusM.toInt()} m"
-        return if (state.alarming) {
-            NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_ALARM)
-                .setSmallIcon(R.drawable.ic_stat_anchor)
-                .setContentTitle(getString(R.string.alarm_notification_title))
-                .setContentText("Boat is $dist from the hook (limit $radius)")
-                .setContentIntent(open)
-                .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_ALARM)
-                .setFullScreenIntent(open, true)
-                .addAction(0, "Silence", silence)
-                .addAction(0, "Stop alarm", stop)
-                .build()
-        } else {
-            NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_WATCH)
-                .setSmallIcon(R.drawable.ic_stat_anchor)
-                .setContentTitle(getString(R.string.watch_notification_title))
-                .setContentText(if (state.silenced) "Silenced until back inside  /  $dist / $radius" else "Swing $dist / $radius")
-                .setContentIntent(open)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .setSilent(true)
-                .addAction(0, "Stop alarm", stop)
-                .build()
+        return when {
+            state.alarming -> {
+                NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_ALARM)
+                    .setSmallIcon(R.drawable.ic_stat_anchor)
+                    .setContentTitle(getString(R.string.alarm_notification_title))
+                    .setContentText("Boat is $dist from the hook (limit $radius)")
+                    .setContentIntent(open)
+                    .setOngoing(true)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_ALARM)
+                    .setFullScreenIntent(open, true)
+                    .addAction(0, "Silence", silence)
+                    .addAction(0, "Stop alarm", stop)
+                    .build()
+            }
+            state.gpsLost -> {
+                NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_ALARM)
+                    .setSmallIcon(R.drawable.ic_stat_anchor)
+                    .setContentTitle("GPS lost")
+                    .setContentText("No fix for 45s. Check the sky and the GPS lamp.")
+                    .setContentIntent(open)
+                    .setOngoing(true)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_STATUS)
+                    .addAction(0, "Stop alarm", stop)
+                    .build()
+            }
+            state.waitingForHook -> {
+                NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_WATCH)
+                    .setSmallIcon(R.drawable.ic_stat_anchor)
+                    .setContentTitle(getString(R.string.watch_notification_title))
+                    .setContentText("Waiting for a good GPS fix to drop the hook")
+                    .setContentIntent(open)
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+                    .setSilent(true)
+                    .addAction(0, "Stop alarm", stop)
+                    .build()
+            }
+            else -> {
+                NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_WATCH)
+                    .setSmallIcon(R.drawable.ic_stat_anchor)
+                    .setContentTitle(getString(R.string.watch_notification_title))
+                    .setContentText(if (state.silenced) "Silenced until back inside  /  $dist / $radius" else "Swing $dist / $radius")
+                    .setContentIntent(open)
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+                    .setSilent(true)
+                    .addAction(0, "Stop alarm", stop)
+                    .build()
+            }
         }
     }
 
@@ -286,6 +333,7 @@ class AnchorWatchService : Service(), LocationListener {
         const val DEFAULT_DWELL_MS = 8_000L
         private const val NOTIF_ID = 42
         private const val ALARM_CHECK_INTERVAL_MS = 1_000L
+        private const val GPS_LOST_MS = 45_000L
         private const val TAG = "AnchorWatchService"
 
         fun start(context: Context, radiusFt: Int, dwellMs: Long = DEFAULT_DWELL_MS) {
