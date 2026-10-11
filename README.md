@@ -8,11 +8,11 @@ No Google Maps key. No account. No ads. Location never leaves the phone.
 
 ## Features
 
-- Settable swing radius in feet or meters (25-500 ft)
+- Settable swing radius in feet or meters (20-500 ft)
 - Map with hook, boat, radius circle, and track
 - Foreground service so the watch keeps running with the screen off
-- Dwell timer (3-20 s) before the alarm to cut false wakes
-- Shows GPS accuracy so you can size the circle as rode + 2x GPS error
+- Dwell timer (3-20 s, default 8 s) before the alarm to cut false wakes
+- Shows GPS accuracy so you can size the circle as rode + 2x GPS error; fixes worse than 30 m accuracy are treated as too unreliable to drop the hook on
 - Test alarm, silence, and weigh-anchor from the app or the notification
 - Dark night-watch UI
 
