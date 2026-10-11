@@ -278,6 +278,8 @@ private fun StatusCard(
                 Text(
                     text = when {
                         state.alarming -> "DRAGGING"
+                        state.gpsLost -> "GPS LOST"
+                        state.waitingForHook -> "WAITING"
                         state.watching -> "ON WATCH"
                         else -> "READY"
                     },
@@ -300,6 +302,8 @@ private fun StatusCard(
             val accLabel = formatDistance(accFt.toDouble(), state.useFeet)
             Text(
                 text = when {
+                    state.gpsLost -> "No GPS fix for 45 seconds. Check the sky."
+                    state.waitingForHook -> "Waiting for a good GPS fix to drop the hook."
                     state.watching -> "$distLabel from hook   /   limit $radiusLabel"
                     state.boat != null -> "Fix locked. Set radius, then START ALARM."
                     else -> "Waiting for a GPS / network fix"
@@ -427,7 +431,7 @@ private fun ControlsCard(
                 Button(
                     onClick = onDrop,
                     modifier = Modifier.fillMaxWidth().height(64.dp),
-                    enabled = state.boat != null,
+                    enabled = true,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary)
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null)
