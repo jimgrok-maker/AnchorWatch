@@ -13,6 +13,7 @@ data class WatchState(
     val watching: Boolean = false,
     val alarming: Boolean = false,
     val silenced: Boolean = false,
+    val gpsLost: Boolean = false,
     val anchor: GeoFix? = null,
     val boat: GeoFix? = null,
     val radiusFt: Int = 100,
@@ -24,9 +25,12 @@ data class WatchState(
 ) {
     val radiusM: Double get() = radiusFt * FT_TO_M
     val distanceM: Double get() = distanceFt * FT_TO_M
+    val waitingForHook: Boolean get() = watching && anchor == null
 
     companion object {
         const val FT_TO_M = 0.3048
         const val M_TO_FT = 3.280839895
+        /** Absolute accuracy ceiling for dropping the hook or counting a fix as a drag. */
+        const val MAX_ACCURACY_M = 30f
     }
 }

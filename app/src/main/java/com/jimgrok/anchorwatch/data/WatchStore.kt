@@ -45,6 +45,7 @@ object WatchStore {
         persist(_state.value)
     }
 
+    /** Start a real watch with a known hook position. */
     fun startWatch(anchor: GeoFix, radiusFt: Int) {
         trackBuffer.clear()
         trackBuffer.addLast(anchor)
@@ -53,6 +54,7 @@ object WatchStore {
             watching = true,
             alarming = false,
             silenced = false,
+            gpsLost = false,
             anchor = anchor,
             boat = anchor,
             radiusFt = radiusFt,
@@ -65,12 +67,34 @@ object WatchStore {
         persist(_state.value)
     }
 
+    /** Service is running and waiting for the first accurate fix to drop the hook. */
+    fun startWatchPending(radiusFt: Int) {
+        trackBuffer.clear()
+        trackVersion.incrementAndGet()
+        _state.value = WatchState(
+            watching = true,
+            alarming = false,
+            silenced = false,
+            gpsLost = false,
+            anchor = null,
+            boat = _state.value.boat,
+            radiusFt = radiusFt.coerceIn(20, 500),
+            distanceFt = 0.0,
+            outsideSinceMs = null,
+            gpsEnabled = true,
+            lastUpdateMs = System.currentTimeMillis(),
+            useFeet = _state.value.useFeet
+        )
+        persist(_state.value)
+    }
+
     fun stopWatch() {
         _state.update {
             it.copy(
                 watching = false,
                 alarming = false,
                 silenced = false,
+                gpsLost = false,
                 outsideSinceMs = null
             )
         }
@@ -81,6 +105,11 @@ object WatchStore {
 
     fun setAlarming(on: Boolean) {
         _state.update { it.copy(alarming = on) }
+        persist(_state.value)
+    }
+
+    fun setGpsLost(on: Boolean) {
+        _state.update { it.copy(gpsLost = on) }
         persist(_state.value)
     }
 
@@ -118,9 +147,16 @@ object WatchStore {
                 boat = fix,
                 distanceFt = distanceFt,
                 outsideSinceMs = outsideSinceMs,
-                lastUpdateMs = fix.timeMs
+                lastUpdateMs = fix.timeMs,
+                gpsLost = false
             )
         }
+        persist(_state.value)
+    }
+
+    /** Update the boat position while waiting for the first good hook fix. */
+    fun setPendingBoat(fix: GeoFix) {
+        _state.update { it.copy(boat = fix, lastUpdateMs = fix.timeMs, gpsLost = false) }
         persist(_state.value)
     }
 
@@ -137,6 +173,7 @@ object WatchStore {
             watching = p.getBoolean(K_WATCHING, false),
             alarming = p.getBoolean(K_ALARMING, false),
             silenced = p.getBoolean(K_SILENCED, false),
+            gpsLost = p.getBoolean(K_GPS_LOST, false),
             anchorLat = p.getString(K_ANCHOR_LAT, null),
             anchorLon = p.getString(K_ANCHOR_LON, null),
             boatLat = p.getString(K_BOAT_LAT, null),
@@ -158,6 +195,7 @@ object WatchStore {
             .putBoolean(K_WATCHING, snap.watching)
             .putBoolean(K_ALARMING, snap.alarming)
             .putBoolean(K_SILENCED, snap.silenced)
+            .putBoolean(K_GPS_LOST, snap.gpsLost)
             .putString(K_ANCHOR_LAT, snap.anchorLat)
             .putString(K_ANCHOR_LON, snap.anchorLon)
             .putString(K_BOAT_LAT, snap.boatLat)
@@ -173,6 +211,7 @@ object WatchStore {
     private const val K_WATCHING = "watching"
     private const val K_ALARMING = "alarming"
     private const val K_SILENCED = "silenced"
+    private const val K_GPS_LOST = "gps_lost"
     private const val K_ANCHOR_LAT = "anchor_lat"
     private const val K_ANCHOR_LON = "anchor_lon"
     private const val K_BOAT_LAT = "boat_lat"
@@ -188,6 +227,7 @@ internal data class WatchPrefsSnapshot(
     val watching: Boolean,
     val alarming: Boolean,
     val silenced: Boolean = false,
+    val gpsLost: Boolean = false,
     val anchorLat: String?,
     val anchorLon: String?,
     val boatLat: String?,
@@ -203,6 +243,7 @@ internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapsh
     watching = watching,
     alarming = alarming,
     silenced = silenced,
+    gpsLost = gpsLost,
     anchorLat = anchor?.latitude?.toString(),
     anchorLon = anchor?.longitude?.toString(),
     boatLat = boat?.latitude?.toString(),
@@ -218,6 +259,7 @@ internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
     watching = watching,
     alarming = alarming,
     silenced = silenced,
+    gpsLost = gpsLost,
     anchor = parseStoredFix(anchorLat, anchorLon),
     boat = parseStoredFix(boatLat, boatLon),
     radiusFt = radiusFt,
@@ -244,6 +286,15 @@ fun haversineFt(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double 
         sin(dLon / 2) * sin(dLon / 2)
     val c = 2 * kotlin.math.atan2(sqrt(a), sqrt(1 - a))
     return r * c * WatchState.M_TO_FT
+}
+
+/** True when this fix is tight enough to drop the hook or count toward a drag. */
+fun isAccurateEnough(fix: GeoFix, radiusFt: Int): Boolean {
+    if (fix.accuracyM <= 0f) return false
+    val radiusM = radiusFt * WatchState.FT_TO_M
+    val relative = (radiusM * 0.4).toFloat()
+    val limit = minOf(WatchState.MAX_ACCURACY_M, relative.coerceAtLeast(8f))
+    return fix.accuracyM <= limit
 }
 
 /** Equirectangular approximate feet distance used as a 3 ft move gate before appending to the track. */
