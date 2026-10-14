@@ -13,6 +13,7 @@ import android.location.LocationManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -20,12 +21,18 @@ import com.jimgrok.anchorwatch.AnchorWatchApp
 import com.jimgrok.anchorwatch.MainActivity
 import com.jimgrok.anchorwatch.R
 import com.jimgrok.anchorwatch.alarm.AlarmPlayer
+import com.jimgrok.anchorwatch.alarm.GPS_LOST_ESCALATE_MS
+import com.jimgrok.anchorwatch.alarm.GPS_LOST_MS
+import com.jimgrok.anchorwatch.alarm.GpsLostAction
+import com.jimgrok.anchorwatch.alarm.gpsLostAction
+import com.jimgrok.anchorwatch.alarm.shouldResumeAlarm
 import com.jimgrok.anchorwatch.alarm.shouldFireDragAlarm
 import com.jimgrok.anchorwatch.data.GeoFix
 import com.jimgrok.anchorwatch.data.WatchState
 import com.jimgrok.anchorwatch.data.WatchStore
 import com.jimgrok.anchorwatch.data.haversineFt
 import com.jimgrok.anchorwatch.data.isAccurateEnough
+import com.jimgrok.anchorwatch.data.isFreshFix
 
 class AnchorWatchService : Service(), LocationListener {
 
@@ -74,9 +81,14 @@ class AnchorWatchService : Service(), LocationListener {
         val radius = intent?.getIntExtra(EXTRA_RADIUS_FT, state.radiusFt) ?: state.radiusFt
         dwellMs = intent?.getLongExtra(EXTRA_DWELL_MS, DEFAULT_DWELL_MS) ?: DEFAULT_DWELL_MS
 
-        if (state.watching && state.anchor != null) {
-            Log.i(TAG, "Resuming persisted watch (anchor=${state.anchor.latitude},${state.anchor.longitude}, radius=${state.radiusFt}ft)")
+        if (state.watching && (state.anchor != null || state.alarming)) {
+            Log.i(TAG, "Resuming persisted watch (anchor=${state.anchor?.latitude},${state.anchor?.longitude}, radius=${state.radiusFt}ft, alarming=${state.alarming})")
             WatchStore.setRadius(radius)
+            if (state.lastAccurateFixMs <= 0) WatchStore.markAccurateFixClock(System.currentTimeMillis())
+            if (shouldResumeAlarm(state.watching, state.alarming)) {
+                Log.w(TAG, "Persisted watch was alarming; restarting the alarm")
+                alarmPlayer.start()
+            }
             startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
             startGps()
             startAlarmTicker()
@@ -146,12 +158,16 @@ class AnchorWatchService : Service(), LocationListener {
             state.outsideSinceMs != null -> state.outsideSinceMs
             else -> now
         }
-        WatchStore.onFix(fix, distanceFt, outsideSince)
+        WatchStore.onFix(fix, distanceFt, outsideSince, accurate)
         startForeground(NOTIF_ID, buildNotification(WatchStore.snapshot()))
     }
 
     override fun onProviderEnabled(provider: String) {
-        if (provider == LocationManager.GPS_PROVIDER) WatchStore.setGpsEnabled(true)
+        if (provider == LocationManager.GPS_PROVIDER) {
+            WatchStore.setGpsEnabled(true)
+            // Re-register in case the earlier request was dropped while GPS was off.
+            if (WatchStore.snapshot().watching) startGps()
+        }
     }
 
     override fun onProviderDisabled(provider: String) {
@@ -159,15 +175,30 @@ class AnchorWatchService : Service(), LocationListener {
     }
 
     private fun evaluateAlarm() {
-        val state = WatchStore.snapshot()
+        val before = WatchStore.snapshot()
         val now = System.currentTimeMillis()
-        if (state.watching && state.anchor != null && !state.gpsLost &&
-            state.lastUpdateMs > 0 && now - state.lastUpdateMs > GPS_LOST_MS
-        ) {
-            Log.w(TAG, "GPS lost: no fix for ${now - state.lastUpdateMs}ms")
-            WatchStore.setGpsLost(true)
-            alarmPlayer.warnOnce()
+        when (gpsLostAction(
+            watching = before.watching,
+            alreadyLost = before.gpsLost,
+            alarming = before.alarming,
+            silenced = before.silenced,
+            lastAccurateFixMs = before.lastAccurateFixMs,
+            nowMs = now,
+        )) {
+            GpsLostAction.WARN -> {
+                Log.w(TAG, "GPS lost: no accurate fix for ${now - before.lastAccurateFixMs}ms")
+                WatchStore.setGpsLost(true)
+                alarmPlayer.warnOnce()
+            }
+            GpsLostAction.ESCALATE -> {
+                Log.w(TAG, "GPS lost for ${now - before.lastAccurateFixMs}ms; escalating to full alarm")
+                WatchStore.setGpsLost(true)
+                WatchStore.setAlarming(true)
+                alarmPlayer.start()
+            }
+            GpsLostAction.NONE -> Unit
         }
+        val state = WatchStore.snapshot()
         if (shouldFireDragAlarm(
                 watching = state.watching,
                 alreadyAlarming = state.alarming,
@@ -202,17 +233,18 @@ class AnchorWatchService : Service(), LocationListener {
         }
         stopGps()
         try {
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    1000L,
-                    0f,
-                    this,
-                    Looper.getMainLooper()
-                )
-            } else {
-                Log.w(TAG, "GPS_PROVIDER not enabled; no location updates")
+            if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                Log.w(TAG, "GPS_PROVIDER disabled; registering anyway so fixes arrive once it is enabled")
+                WatchStore.setGpsEnabled(false)
             }
+            // stopGps() above removes any prior registration, so this never double-registers.
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                1000L,
+                0f,
+                this,
+                Looper.getMainLooper()
+            )
         } catch (e: SecurityException) {
             Log.w(TAG, "requestLocationUpdates denied by system", e)
         }
@@ -242,13 +274,12 @@ class AnchorWatchService : Service(), LocationListener {
         }
         val loc = try {
             locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
         } catch (e: SecurityException) {
             Log.w(TAG, "getLastKnownLocation denied", e)
             null
         }
-        return if (loc != null) {
-            GeoFix(loc.latitude, loc.longitude, loc.accuracy, System.currentTimeMillis())
+        return if (loc != null && isFreshFix(loc.elapsedRealtimeNanos, SystemClock.elapsedRealtimeNanos())) {
+            GeoFix(loc.latitude, loc.longitude, loc.accuracy, loc.time)
         } else {
             WatchStore.snapshot().boat
         }
@@ -273,27 +304,29 @@ class AnchorWatchService : Service(), LocationListener {
             state.alarming -> {
                 NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_ALARM)
                     .setSmallIcon(R.drawable.ic_stat_anchor)
-                    .setContentTitle(getString(R.string.alarm_notification_title))
-                    .setContentText("Boat is $dist from the hook (limit $radius)")
+                    .setContentTitle(if (state.gpsLost) "GPS lost" else getString(R.string.alarm_notification_title))
+                    .setContentText(
+                        if (state.gpsLost) "No accurate GPS fix for ${GPS_LOST_ESCALATE_MS / 60_000} min. Check the boat."
+                        else "Boat is $dist from the hook (limit $radius)"
+                    )
                     .setContentIntent(open)
                     .setOngoing(true)
                     .setPriority(NotificationCompat.PRIORITY_MAX)
                     .setCategory(NotificationCompat.CATEGORY_ALARM)
                     .setFullScreenIntent(open, true)
                     .addAction(0, "Silence", silence)
-                    .addAction(0, "Stop alarm", stop)
                     .build()
             }
             state.gpsLost -> {
                 NotificationCompat.Builder(this, AnchorWatchApp.CHANNEL_ALARM)
                     .setSmallIcon(R.drawable.ic_stat_anchor)
                     .setContentTitle("GPS lost")
-                    .setContentText("No fix for 45s. Check the sky and the GPS lamp.")
+                    .setContentText("No accurate fix for ${GPS_LOST_MS / 1000}s. Check the sky and the GPS lamp.")
                     .setContentIntent(open)
                     .setOngoing(true)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setCategory(NotificationCompat.CATEGORY_STATUS)
-                    .addAction(0, "Stop alarm", stop)
+                    .addAction(0, "Stop watch", stop)
                     .build()
             }
             state.waitingForHook -> {
@@ -305,7 +338,7 @@ class AnchorWatchService : Service(), LocationListener {
                     .setOngoing(true)
                     .setOnlyAlertOnce(true)
                     .setSilent(true)
-                    .addAction(0, "Stop alarm", stop)
+                    .addAction(0, "Stop watch", stop)
                     .build()
             }
             else -> {
@@ -317,7 +350,7 @@ class AnchorWatchService : Service(), LocationListener {
                     .setOngoing(true)
                     .setOnlyAlertOnce(true)
                     .setSilent(true)
-                    .addAction(0, "Stop alarm", stop)
+                    .addAction(0, "Stop watch", stop)
                     .build()
             }
         }
@@ -333,7 +366,6 @@ class AnchorWatchService : Service(), LocationListener {
         const val DEFAULT_DWELL_MS = 8_000L
         private const val NOTIF_ID = 42
         private const val ALARM_CHECK_INTERVAL_MS = 1_000L
-        private const val GPS_LOST_MS = 45_000L
         private const val TAG = "AnchorWatchService"
 
         fun start(context: Context, radiusFt: Int, dwellMs: Long = DEFAULT_DWELL_MS) {
