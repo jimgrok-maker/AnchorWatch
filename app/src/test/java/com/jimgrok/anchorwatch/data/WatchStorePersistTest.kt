@@ -17,6 +17,7 @@ class WatchStorePersistTest {
             outsideSinceMs = 9_000L,
             gpsEnabled = false,
             lastUpdateMs = 456L,
+            lastAccurateFixMs = 400L,
             useFeet = false,
         )
 
@@ -32,6 +33,7 @@ class WatchStorePersistTest {
         assertEquals(9_000L, restored.outsideSinceMs)
         assertEquals(false, restored.gpsEnabled)
         assertEquals(456L, restored.lastUpdateMs)
+        assertEquals(400L, restored.lastAccurateFixMs)
         assertEquals(false, restored.useFeet)
         assertEquals(0.0, restored.distanceFt, 0.0)
     }

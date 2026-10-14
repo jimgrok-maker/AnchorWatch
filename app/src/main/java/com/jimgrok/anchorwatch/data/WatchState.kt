@@ -21,6 +21,8 @@ data class WatchState(
     val outsideSinceMs: Long? = null,
     val gpsEnabled: Boolean = true,
     val lastUpdateMs: Long = 0L,
+    /** Wall-clock time of the last fix accurate enough to trust; drives GPS-lost. */
+    val lastAccurateFixMs: Long = 0L,
     val useFeet: Boolean = true
 ) {
     val radiusM: Double get() = radiusFt * FT_TO_M
