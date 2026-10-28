@@ -62,6 +62,7 @@ object WatchStore {
             outsideSinceMs = null,
             gpsEnabled = true,
             lastUpdateMs = anchor.timeMs,
+            lastAccurateFixMs = System.currentTimeMillis(),
             useFeet = _state.value.useFeet
         )
         persist(_state.value)
@@ -83,6 +84,7 @@ object WatchStore {
             outsideSinceMs = null,
             gpsEnabled = true,
             lastUpdateMs = System.currentTimeMillis(),
+            lastAccurateFixMs = System.currentTimeMillis(),
             useFeet = _state.value.useFeet
         )
         persist(_state.value)
@@ -128,7 +130,17 @@ object WatchStore {
         _state.update { it.copy(gpsEnabled = enabled) }
     }
 
-    fun onFix(fix: GeoFix, distanceFt: Double, outsideSinceMs: Long?) {
+    /** Restart the GPS-lost clock, e.g. when a persisted watch resumes without a stored value. */
+    fun markAccurateFixClock(nowMs: Long) {
+        _state.update { it.copy(lastAccurateFixMs = nowMs) }
+        persist(_state.value)
+    }
+
+    /**
+     * Record a fix. Only [accurate] fixes reset the GPS-lost clock, so a stream of poor fixes
+     * still ends in a GPS-lost warning.
+     */
+    fun onFix(fix: GeoFix, distanceFt: Double, outsideSinceMs: Long?, accurate: Boolean) {
         val watching = _state.value.watching
         if (watching) {
             val last = trackBuffer.peekLast()
@@ -148,7 +160,8 @@ object WatchStore {
                 distanceFt = distanceFt,
                 outsideSinceMs = outsideSinceMs,
                 lastUpdateMs = fix.timeMs,
-                gpsLost = false
+                lastAccurateFixMs = if (accurate) fix.timeMs else it.lastAccurateFixMs,
+                gpsLost = if (accurate) false else it.gpsLost
             )
         }
         persist(_state.value)
@@ -156,7 +169,7 @@ object WatchStore {
 
     /** Update the boat position while waiting for the first good hook fix. */
     fun setPendingBoat(fix: GeoFix) {
-        _state.update { it.copy(boat = fix, lastUpdateMs = fix.timeMs, gpsLost = false) }
+        _state.update { it.copy(boat = fix, lastUpdateMs = fix.timeMs) }
         persist(_state.value)
     }
 
@@ -182,6 +195,7 @@ object WatchStore {
             outsideSinceMs = p.getLong(K_OUTSIDE_SINCE_MS, -1L),
             gpsEnabled = p.getBoolean(K_GPS_ENABLED, true),
             lastUpdateMs = p.getLong(K_LAST_UPDATE_MS, 0L),
+            lastAccurateFixMs = p.getLong(K_LAST_ACCURATE_FIX_MS, 0L),
             useFeet = p.getBoolean(K_USE_FEET, true)
         ).toWatchState()
         trackBuffer.clear()
@@ -204,6 +218,7 @@ object WatchStore {
             .putLong(K_OUTSIDE_SINCE_MS, snap.outsideSinceMs)
             .putBoolean(K_GPS_ENABLED, snap.gpsEnabled)
             .putLong(K_LAST_UPDATE_MS, snap.lastUpdateMs)
+            .putLong(K_LAST_ACCURATE_FIX_MS, snap.lastAccurateFixMs)
             .putBoolean(K_USE_FEET, snap.useFeet)
             .apply()
     }
@@ -220,6 +235,7 @@ object WatchStore {
     private const val K_OUTSIDE_SINCE_MS = "outside_since_ms"
     private const val K_GPS_ENABLED = "gps_enabled"
     private const val K_LAST_UPDATE_MS = "last_update_ms"
+    private const val K_LAST_ACCURATE_FIX_MS = "last_accurate_fix_ms"
     private const val K_USE_FEET = "use_feet"
 }
 
@@ -237,6 +253,7 @@ internal data class WatchPrefsSnapshot(
     val gpsEnabled: Boolean,
     val lastUpdateMs: Long,
     val useFeet: Boolean,
+    val lastAccurateFixMs: Long = 0L,
 )
 
 internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapshot(
@@ -252,6 +269,7 @@ internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapsh
     outsideSinceMs = outsideSinceMs ?: -1L,
     gpsEnabled = gpsEnabled,
     lastUpdateMs = lastUpdateMs,
+    lastAccurateFixMs = lastAccurateFixMs,
     useFeet = useFeet,
 )
 
@@ -267,6 +285,7 @@ internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
     outsideSinceMs = outsideSinceMs.takeIf { it >= 0 },
     gpsEnabled = gpsEnabled,
     lastUpdateMs = lastUpdateMs,
+    lastAccurateFixMs = lastAccurateFixMs,
     useFeet = useFeet,
 )
 
