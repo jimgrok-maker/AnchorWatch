@@ -73,6 +73,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jimgrok.anchorwatch.data.GeoFix
 import com.jimgrok.anchorwatch.data.WatchState
 import com.jimgrok.anchorwatch.data.WatchStore
+import com.jimgrok.anchorwatch.data.isRadiusTooSmallForGps
 import com.jimgrok.anchorwatch.service.AnchorWatchService
 import kotlin.math.roundToInt
 
@@ -404,6 +405,13 @@ private fun ControlsCard(
             }
             Text(formatDistance(state.radiusFt.toDouble(), state.useFeet), fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
             Slider(value = state.radiusFt.toFloat(), onValueChange = { onRadius(it.roundToInt()) }, valueRange = 20f..500f)
+            if (isRadiusTooSmallForGps(state.radiusFt)) {
+                Text(
+                    "Small circle: phone GPS is only good to a few metres. Use ${formatDistance(WatchState.MIN_RECOMMENDED_RADIUS_FT.toDouble(), state.useFeet)} or more to avoid missed fixes and false alarms.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             Text("Rule of thumb: rode length + 2x GPS error. Dwell ${dwellSec}s outside the circle before the alarm.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
             Slider(value = dwellSec.toFloat(), onValueChange = { onDwell(it.roundToInt().coerceIn(3, 20)) }, valueRange = 3f..20f, steps = 16)
             Row(verticalAlignment = Alignment.CenterVertically) {

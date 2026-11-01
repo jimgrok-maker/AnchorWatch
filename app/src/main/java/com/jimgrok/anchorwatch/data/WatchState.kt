@@ -34,5 +34,11 @@ data class WatchState(
         const val M_TO_FT = 3.280839895
         /** Absolute accuracy ceiling for dropping the hook or counting a fix as a drag. */
         const val MAX_ACCURACY_M = 30f
+        /** Smallest accuracy limit used, however small the radius. */
+        const val ACCURACY_FLOOR_M = 5f
+        /** Accepted fix error as a fraction of the swing radius. */
+        const val ACCURACY_RADIUS_FRACTION = 0.4f
+        /** Below this radius GPS error is a large part of the circle; the UI recommends more. */
+        const val MIN_RECOMMENDED_RADIUS_FT = 50
     }
 }

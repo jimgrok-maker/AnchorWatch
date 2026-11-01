@@ -307,13 +307,25 @@ fun haversineFt(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double 
     return r * c * WatchState.M_TO_FT
 }
 
+/**
+ * Worst fix error (metres) accepted for a swing circle of [radiusFt]: 40% of the radius, but never
+ * below [WatchState.ACCURACY_FLOOR_M] (phone GPS rarely does better) and never above
+ * [WatchState.MAX_ACCURACY_M]. For radii under about 41 ft the floor is larger than 40% of the
+ * radius; those circles are still gated at the floor, and the UI recommends a larger one
+ * ([isRadiusTooSmallForGps]).
+ */
+fun accuracyLimitM(radiusFt: Int): Float {
+    val relative = (radiusFt * WatchState.FT_TO_M * WatchState.ACCURACY_RADIUS_FRACTION).toFloat()
+    return relative.coerceIn(WatchState.ACCURACY_FLOOR_M, WatchState.MAX_ACCURACY_M)
+}
+
+/** True when the radius is small enough that normal phone GPS error is a large part of it. */
+fun isRadiusTooSmallForGps(radiusFt: Int): Boolean = radiusFt < WatchState.MIN_RECOMMENDED_RADIUS_FT
+
 /** True when this fix is tight enough to drop the hook or count toward a drag. */
 fun isAccurateEnough(fix: GeoFix, radiusFt: Int): Boolean {
     if (fix.accuracyM <= 0f) return false
-    val radiusM = radiusFt * WatchState.FT_TO_M
-    val relative = (radiusM * 0.4).toFloat()
-    val limit = minOf(WatchState.MAX_ACCURACY_M, relative.coerceAtLeast(8f))
-    return fix.accuracyM <= limit
+    return fix.accuracyM <= accuracyLimitM(radiusFt)
 }
 
 /** Equirectangular approximate feet distance used as a 3 ft move gate before appending to the track. */
