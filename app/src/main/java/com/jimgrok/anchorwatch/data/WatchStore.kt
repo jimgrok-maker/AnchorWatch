@@ -11,6 +11,12 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/**
+ * Single in-memory source of truth for the watch, mirrored to SharedPreferences.
+ *
+ * Main-thread only: the UI, the service's location callbacks and its alarm ticker all run on the
+ * main looper, and [trackBuffer] and the persistence bookkeeping are not synchronized.
+ */
 object WatchStore {
     private val _state = MutableStateFlow(WatchState())
     val state: StateFlow<WatchState> = _state.asStateFlow()
@@ -23,6 +29,8 @@ object WatchStore {
 
     private var prefs: SharedPreferences? = null
     private var initialized = false
+    private var lastPersisted: WatchPrefsSnapshot? = null
+    private var lastPersistMs = 0L
 
     fun snapshot(): WatchState = _state.value
 
@@ -208,11 +216,24 @@ object WatchStore {
         ).toWatchState()
         trackBuffer.clear()
         trackVersion.incrementAndGet()
+        lastPersisted = _state.value.toPrefsSnapshot()
+        lastPersistMs = System.currentTimeMillis()
     }
 
-    private fun persist(state: WatchState) {
+    /** Write the current state now, e.g. when the service is being torn down. */
+    fun flush() = persist(_state.value, force = true)
+
+    /**
+     * Writes are throttled (see [shouldPersist]): transitions are written at once, routine
+     * fix updates at most every [PERSIST_INTERVAL_MS].
+     */
+    private fun persist(state: WatchState, force: Boolean = false) {
         val p = prefs ?: return
         val snap = state.toPrefsSnapshot()
+        val now = System.currentTimeMillis()
+        if (!force && !shouldPersist(lastPersisted, snap, lastPersistMs, now)) return
+        lastPersisted = snap
+        lastPersistMs = now
         p.edit()
             .putBoolean(K_WATCHING, snap.watching)
             .putBoolean(K_ALARMING, snap.alarming)
