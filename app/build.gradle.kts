@@ -4,6 +4,19 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Optional release signing. Supply all of KEYSTORE_PATH, KEYSTORE_PASSWORD and KEY_ALIAS
+// (KEY_PASSWORD defaults to the keystore password) as environment variables or Gradle
+// properties (-P / ~/.gradle/gradle.properties). Nothing secret is stored in this repo.
+fun signingValue(name: String): String? =
+    (findProperty(name) as String?)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(name)?.takeIf { it.isNotBlank() }
+
+val releaseKeystorePath = signingValue("KEYSTORE_PATH")
+val releaseKeystorePassword = signingValue("KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("KEY_ALIAS")
+val hasReleaseKeystore =
+    releaseKeystorePath != null && releaseKeystorePassword != null && releaseKeyAlias != null
+
 android {
     namespace = "com.jimgrok.anchorwatch"
     compileSdk = 35
@@ -16,10 +29,29 @@ android {
         versionName = "1.0.13"
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = signingValue("KEY_PASSWORD") ?: releaseKeystorePassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            // WARNING: without a release keystore (see KEYSTORE_PATH above) the release APK is
+            // signed with the publicly-known DEBUG key. That is fine for sideloading and CI
+            // artifacts, but such an APK must not be published to a store, and updates only
+            // install over builds signed with the same key.
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
