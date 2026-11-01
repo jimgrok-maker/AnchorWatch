@@ -2,6 +2,7 @@ package com.jimgrok.anchorwatch.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -73,6 +74,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jimgrok.anchorwatch.data.GeoFix
 import com.jimgrok.anchorwatch.data.WatchState
 import com.jimgrok.anchorwatch.data.WatchStore
+import com.jimgrok.anchorwatch.data.isRadiusTooSmallForGps
 import com.jimgrok.anchorwatch.service.AnchorWatchService
 import kotlin.math.roundToInt
 
@@ -84,9 +86,11 @@ private val LampRed = Color(0xFFC62828)
 data class SystemReadiness(
     val gps: Boolean,
     val background: Boolean,
-    val battery: Boolean
+    val battery: Boolean,
+    /** Android 14+ can revoke the full-screen alarm intent; always true below API 34. */
+    val fullScreen: Boolean = true
 ) {
-    val allGood: Boolean get() = gps && background && battery
+    val allGood: Boolean get() = gps && background && battery && fullScreen
 
     companion object {
         fun from(context: Context): SystemReadiness {
@@ -118,10 +122,18 @@ data class SystemReadiness(
             val battery = runCatching {
                 pm.isIgnoringBatteryOptimizations(context.packageName)
             }.getOrDefault(false)
+            val fullScreen = if (Build.VERSION.SDK_INT >= 34) {
+                runCatching {
+                    context.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+                }.getOrDefault(false)
+            } else {
+                true
+            }
             return SystemReadiness(
                 gps = fine && providerOn,
                 background = background && notifyOk,
-                battery = battery
+                battery = battery,
+                fullScreen = fullScreen
             )
         }
     }
@@ -133,7 +145,7 @@ fun WatchScreen() {
     val context = LocalContext.current
     val state by WatchStore.state.collectAsStateWithLifecycle()
     var followBoat by remember { mutableStateOf(true) }
-    var dwellSec by remember { mutableStateOf(8) }
+    val dwellSec = (state.dwellMs / 1000L).toInt()
     var permissionNote by remember { mutableStateOf<String?>(null) }
     var locationGranted by remember {
         mutableStateOf(
@@ -226,6 +238,7 @@ fun WatchScreen() {
                     else runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
                 },
                 onBgLamp = { openAppSettings(context) },
+                onFullScreenLamp = { openFullScreenIntentSettings(context) },
                 onBatteryLamp = {
                     val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                         data = Uri.parse("package:${context.packageName}")
@@ -237,12 +250,12 @@ fun WatchScreen() {
                 ControlsCard(
                     state = state,
                     dwellSec = dwellSec,
-                    onDwell = { dwellSec = it },
+                    onDwell = { WatchStore.setDwellMs(it * 1000L) },
                     followBoat = followBoat,
                     onFollow = { followBoat = it },
                     onRadius = { WatchStore.setRadius(it) },
                     onUnits = { WatchStore.setUseFeet(it) },
-                    onDrop = { AnchorWatchService.start(context, state.radiusFt, dwellSec * 1000L) },
+                    onDrop = { AnchorWatchService.start(context, state.radiusFt, state.dwellMs) },
                     onWeigh = { AnchorWatchService.stop(context) },
                     onSilence = { AnchorWatchService.silence(context) },
                     onTest = { AnchorWatchService.testAlarm(context) },
@@ -266,6 +279,7 @@ private fun StatusCard(
     readiness: SystemReadiness,
     onGpsLamp: () -> Unit,
     onBgLamp: () -> Unit,
+    onFullScreenLamp: () -> Unit,
     onBatteryLamp: () -> Unit
 ) {
     Surface(
@@ -293,7 +307,7 @@ private fun StatusCard(
                     fontSize = 18.sp,
                     modifier = Modifier.weight(1f)
                 )
-                ReadinessBox(readiness = readiness, onGps = onGpsLamp, onBg = onBgLamp, onBattery = onBatteryLamp)
+                ReadinessBox(readiness = readiness, onGps = onGpsLamp, onBg = onBgLamp, onFullScreen = onFullScreenLamp, onBattery = onBatteryLamp)
             }
             Spacer(Modifier.height(6.dp))
             val distLabel = formatDistance(state.distanceFt, state.useFeet)
@@ -348,6 +362,7 @@ private fun ReadinessBox(
     readiness: SystemReadiness,
     onGps: () -> Unit,
     onBg: () -> Unit,
+    onFullScreen: () -> Unit,
     onBattery: () -> Unit
 ) {
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.background.copy(alpha = 0.55f)) {
@@ -358,6 +373,7 @@ private fun ReadinessBox(
         ) {
             Lamp(label = "GPS", ok = readiness.gps, onClick = onGps)
             Lamp(label = "BG", ok = readiness.background, onClick = onBg)
+            Lamp(label = "FSI", ok = readiness.fullScreen, onClick = onFullScreen)
             Lamp(label = "BAT", ok = readiness.battery, onClick = onBattery)
         }
     }
@@ -375,6 +391,7 @@ private fun readinessHint(readiness: SystemReadiness): String {
     return when {
         !readiness.gps -> "Tap GPS: allow precise location, or turn the GPS provider on."
         !readiness.background -> "Tap BG: set Location to Allow all the time, and allow notifications."
+        !readiness.fullScreen -> "Tap FSI: allow full-screen notifications so the alarm can wake the screen."
         !readiness.battery -> "Tap BAT: allow Ignore battery optimizations so the watch stays alive."
         else -> ""
     }
@@ -404,6 +421,13 @@ private fun ControlsCard(
             }
             Text(formatDistance(state.radiusFt.toDouble(), state.useFeet), fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
             Slider(value = state.radiusFt.toFloat(), onValueChange = { onRadius(it.roundToInt()) }, valueRange = 20f..500f)
+            if (isRadiusTooSmallForGps(state.radiusFt)) {
+                Text(
+                    "Small circle: phone GPS is only good to a few metres. Use ${formatDistance(WatchState.MIN_RECOMMENDED_RADIUS_FT.toDouble(), state.useFeet)} or more to avoid missed fixes and false alarms.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             Text("Rule of thumb: rode length + 2x GPS error. Dwell ${dwellSec}s outside the circle before the alarm.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
             Slider(value = dwellSec.toFloat(), onValueChange = { onDwell(it.roundToInt().coerceIn(3, 20)) }, valueRange = 3f..20f, steps = 16)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -476,6 +500,20 @@ private fun seedLastKnown(lm: LocationManager) {
     ).mapNotNull { provider -> runCatching { lm.getLastKnownLocation(provider) }.getOrNull() }
     val best = candidates.maxByOrNull { it.time } ?: return
     WatchStore.previewFix(best.toFix())
+}
+
+private fun openFullScreenIntentSettings(context: Context) {
+    if (Build.VERSION.SDK_INT >= 34) {
+        runCatching {
+            context.startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                }
+            )
+        }.onSuccess { return }
+            .onFailure { Log.w(TAG, "full-screen intent settings unavailable", it) }
+    }
+    openAppSettings(context)
 }
 
 private fun openAppSettings(context: Context) {

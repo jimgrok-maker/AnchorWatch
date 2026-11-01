@@ -23,16 +23,27 @@ data class WatchState(
     val lastUpdateMs: Long = 0L,
     /** Wall-clock time of the last fix accurate enough to trust; drives GPS-lost. */
     val lastAccurateFixMs: Long = 0L,
-    val useFeet: Boolean = true
+    val useFeet: Boolean = true,
+    /** How long the boat must stay outside the circle before the drag alarm fires. */
+    val dwellMs: Long = DEFAULT_DWELL_MS
 ) {
     val radiusM: Double get() = radiusFt * FT_TO_M
     val distanceM: Double get() = distanceFt * FT_TO_M
     val waitingForHook: Boolean get() = watching && anchor == null
 
     companion object {
+        const val DEFAULT_DWELL_MS = 8_000L
+        const val MIN_DWELL_MS = 3_000L
+        const val MAX_DWELL_MS = 20_000L
         const val FT_TO_M = 0.3048
         const val M_TO_FT = 3.280839895
         /** Absolute accuracy ceiling for dropping the hook or counting a fix as a drag. */
         const val MAX_ACCURACY_M = 30f
+        /** Smallest accuracy limit used, however small the radius. */
+        const val ACCURACY_FLOOR_M = 5f
+        /** Accepted fix error as a fraction of the swing radius. */
+        const val ACCURACY_RADIUS_FRACTION = 0.4f
+        /** Below this radius GPS error is a large part of the circle; the UI recommends more. */
+        const val MIN_RECOMMENDED_RADIUS_FT = 50
     }
 }

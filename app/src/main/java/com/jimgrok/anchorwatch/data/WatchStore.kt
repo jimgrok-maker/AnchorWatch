@@ -11,6 +11,12 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/**
+ * Single in-memory source of truth for the watch, mirrored to SharedPreferences.
+ *
+ * Main-thread only: the UI, the service's location callbacks and its alarm ticker all run on the
+ * main looper, and [trackBuffer] and the persistence bookkeeping are not synchronized.
+ */
 object WatchStore {
     private val _state = MutableStateFlow(WatchState())
     val state: StateFlow<WatchState> = _state.asStateFlow()
@@ -23,6 +29,8 @@ object WatchStore {
 
     private var prefs: SharedPreferences? = null
     private var initialized = false
+    private var lastPersisted: WatchPrefsSnapshot? = null
+    private var lastPersistMs = 0L
 
     fun snapshot(): WatchState = _state.value
 
@@ -37,6 +45,11 @@ object WatchStore {
 
     fun setRadius(feet: Int) {
         _state.update { it.copy(radiusFt = feet.coerceIn(20, 500)) }
+        persist(_state.value)
+    }
+
+    fun setDwellMs(ms: Long) {
+        _state.update { it.copy(dwellMs = ms.coerceIn(WatchState.MIN_DWELL_MS, WatchState.MAX_DWELL_MS)) }
         persist(_state.value)
     }
 
@@ -63,7 +76,8 @@ object WatchStore {
             gpsEnabled = true,
             lastUpdateMs = anchor.timeMs,
             lastAccurateFixMs = System.currentTimeMillis(),
-            useFeet = _state.value.useFeet
+            useFeet = _state.value.useFeet,
+            dwellMs = _state.value.dwellMs
         )
         persist(_state.value)
     }
@@ -85,7 +99,8 @@ object WatchStore {
             gpsEnabled = true,
             lastUpdateMs = System.currentTimeMillis(),
             lastAccurateFixMs = System.currentTimeMillis(),
-            useFeet = _state.value.useFeet
+            useFeet = _state.value.useFeet,
+            dwellMs = _state.value.dwellMs
         )
         persist(_state.value)
     }
@@ -196,15 +211,29 @@ object WatchStore {
             gpsEnabled = p.getBoolean(K_GPS_ENABLED, true),
             lastUpdateMs = p.getLong(K_LAST_UPDATE_MS, 0L),
             lastAccurateFixMs = p.getLong(K_LAST_ACCURATE_FIX_MS, 0L),
-            useFeet = p.getBoolean(K_USE_FEET, true)
+            useFeet = p.getBoolean(K_USE_FEET, true),
+            dwellMs = p.getLong(K_DWELL_MS, WatchState.DEFAULT_DWELL_MS)
         ).toWatchState()
         trackBuffer.clear()
         trackVersion.incrementAndGet()
+        lastPersisted = _state.value.toPrefsSnapshot()
+        lastPersistMs = System.currentTimeMillis()
     }
 
-    private fun persist(state: WatchState) {
+    /** Write the current state now, e.g. when the service is being torn down. */
+    fun flush() = persist(_state.value, force = true)
+
+    /**
+     * Writes are throttled (see [shouldPersist]): transitions are written at once, routine
+     * fix updates at most every [PERSIST_INTERVAL_MS].
+     */
+    private fun persist(state: WatchState, force: Boolean = false) {
         val p = prefs ?: return
         val snap = state.toPrefsSnapshot()
+        val now = System.currentTimeMillis()
+        if (!force && !shouldPersist(lastPersisted, snap, lastPersistMs, now)) return
+        lastPersisted = snap
+        lastPersistMs = now
         p.edit()
             .putBoolean(K_WATCHING, snap.watching)
             .putBoolean(K_ALARMING, snap.alarming)
@@ -220,6 +249,7 @@ object WatchStore {
             .putLong(K_LAST_UPDATE_MS, snap.lastUpdateMs)
             .putLong(K_LAST_ACCURATE_FIX_MS, snap.lastAccurateFixMs)
             .putBoolean(K_USE_FEET, snap.useFeet)
+            .putLong(K_DWELL_MS, snap.dwellMs)
             .apply()
     }
 
@@ -237,6 +267,7 @@ object WatchStore {
     private const val K_LAST_UPDATE_MS = "last_update_ms"
     private const val K_LAST_ACCURATE_FIX_MS = "last_accurate_fix_ms"
     private const val K_USE_FEET = "use_feet"
+    private const val K_DWELL_MS = "dwell_ms"
 }
 
 internal data class WatchPrefsSnapshot(
@@ -254,6 +285,7 @@ internal data class WatchPrefsSnapshot(
     val lastUpdateMs: Long,
     val useFeet: Boolean,
     val lastAccurateFixMs: Long = 0L,
+    val dwellMs: Long = WatchState.DEFAULT_DWELL_MS,
 )
 
 internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapshot(
@@ -271,6 +303,7 @@ internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapsh
     lastUpdateMs = lastUpdateMs,
     lastAccurateFixMs = lastAccurateFixMs,
     useFeet = useFeet,
+    dwellMs = dwellMs,
 )
 
 internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
@@ -287,6 +320,7 @@ internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
     lastUpdateMs = lastUpdateMs,
     lastAccurateFixMs = lastAccurateFixMs,
     useFeet = useFeet,
+    dwellMs = dwellMs.coerceIn(WatchState.MIN_DWELL_MS, WatchState.MAX_DWELL_MS),
 )
 
 private fun parseStoredFix(lat: String?, lon: String?): GeoFix? {
@@ -307,13 +341,25 @@ fun haversineFt(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double 
     return r * c * WatchState.M_TO_FT
 }
 
+/**
+ * Worst fix error (metres) accepted for a swing circle of [radiusFt]: 40% of the radius, but never
+ * below [WatchState.ACCURACY_FLOOR_M] (phone GPS rarely does better) and never above
+ * [WatchState.MAX_ACCURACY_M]. For radii under about 41 ft the floor is larger than 40% of the
+ * radius; those circles are still gated at the floor, and the UI recommends a larger one
+ * ([isRadiusTooSmallForGps]).
+ */
+fun accuracyLimitM(radiusFt: Int): Float {
+    val relative = (radiusFt * WatchState.FT_TO_M * WatchState.ACCURACY_RADIUS_FRACTION).toFloat()
+    return relative.coerceIn(WatchState.ACCURACY_FLOOR_M, WatchState.MAX_ACCURACY_M)
+}
+
+/** True when the radius is small enough that normal phone GPS error is a large part of it. */
+fun isRadiusTooSmallForGps(radiusFt: Int): Boolean = radiusFt < WatchState.MIN_RECOMMENDED_RADIUS_FT
+
 /** True when this fix is tight enough to drop the hook or count toward a drag. */
 fun isAccurateEnough(fix: GeoFix, radiusFt: Int): Boolean {
     if (fix.accuracyM <= 0f) return false
-    val radiusM = radiusFt * WatchState.FT_TO_M
-    val relative = (radiusM * 0.4).toFloat()
-    val limit = minOf(WatchState.MAX_ACCURACY_M, relative.coerceAtLeast(8f))
-    return fix.accuracyM <= limit
+    return fix.accuracyM <= accuracyLimitM(radiusFt)
 }
 
 /** Equirectangular approximate feet distance used as a 3 ft move gate before appending to the track. */

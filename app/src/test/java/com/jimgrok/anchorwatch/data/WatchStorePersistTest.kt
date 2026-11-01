@@ -19,6 +19,7 @@ class WatchStorePersistTest {
             lastUpdateMs = 456L,
             lastAccurateFixMs = 400L,
             useFeet = false,
+            dwellMs = 12_000L,
         )
 
         val restored = original.toPrefsSnapshot().toWatchState()
@@ -35,6 +36,7 @@ class WatchStorePersistTest {
         assertEquals(456L, restored.lastUpdateMs)
         assertEquals(400L, restored.lastAccurateFixMs)
         assertEquals(false, restored.useFeet)
+        assertEquals(12_000L, restored.dwellMs)
         assertEquals(0.0, restored.distanceFt, 0.0)
     }
 
@@ -68,5 +70,19 @@ class WatchStorePersistTest {
         ).toPrefsSnapshot().copy(anchorLon = null)
 
         assertNull(snap.toWatchState().anchor)
+    }
+
+    @Test
+    fun dwellDefaultsWhenNotStored() {
+        assertEquals(WatchState.DEFAULT_DWELL_MS, WatchState().toPrefsSnapshot().toWatchState().dwellMs)
+    }
+
+    @Test
+    fun outOfRangeStoredDwellIsClamped() {
+        val low = WatchState().toPrefsSnapshot().copy(dwellMs = 0L).toWatchState()
+        val high = WatchState().toPrefsSnapshot().copy(dwellMs = 10 * 60_000L).toWatchState()
+
+        assertEquals(WatchState.MIN_DWELL_MS, low.dwellMs)
+        assertEquals(WatchState.MAX_DWELL_MS, high.dwellMs)
     }
 }
