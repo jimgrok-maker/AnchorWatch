@@ -38,7 +38,6 @@ class AnchorWatchService : Service(), LocationListener {
 
     private lateinit var locationManager: LocationManager
     private lateinit var alarmPlayer: AlarmPlayer
-    private var dwellMs: Long = DEFAULT_DWELL_MS
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val alarmCheckRunnable = object : Runnable {
@@ -79,7 +78,10 @@ class AnchorWatchService : Service(), LocationListener {
 
         val state = WatchStore.snapshot()
         val radius = intent?.getIntExtra(EXTRA_RADIUS_FT, state.radiusFt) ?: state.radiusFt
-        dwellMs = intent?.getLongExtra(EXTRA_DWELL_MS, DEFAULT_DWELL_MS) ?: DEFAULT_DWELL_MS
+        // A dwell sent with START wins; otherwise keep the stored one (e.g. after a sticky restart).
+        if (intent?.hasExtra(EXTRA_DWELL_MS) == true) {
+            WatchStore.setDwellMs(intent.getLongExtra(EXTRA_DWELL_MS, WatchState.DEFAULT_DWELL_MS))
+        }
 
         if (state.watching && (state.anchor != null || state.alarming)) {
             Log.i(TAG, "Resuming persisted watch (anchor=${state.anchor?.latitude},${state.anchor?.longitude}, radius=${state.radiusFt}ft, alarming=${state.alarming})")
@@ -205,10 +207,10 @@ class AnchorWatchService : Service(), LocationListener {
                 silenced = state.silenced,
                 outsideSinceMs = state.outsideSinceMs,
                 nowMs = now,
-                dwellMs = dwellMs,
+                dwellMs = state.dwellMs,
             )
         ) {
-            Log.i(TAG, "Alarm firing: outside for ${now - (state.outsideSinceMs ?: now)}ms (dwell=${dwellMs}ms)")
+            Log.i(TAG, "Alarm firing: outside for ${now - (state.outsideSinceMs ?: now)}ms (dwell=${state.dwellMs}ms)")
             WatchStore.setAlarming(true)
             alarmPlayer.start()
         }
@@ -363,7 +365,7 @@ class AnchorWatchService : Service(), LocationListener {
         const val ACTION_TEST_ALARM = "com.jimgrok.anchorwatch.TEST_ALARM"
         const val EXTRA_RADIUS_FT = "radius_ft"
         const val EXTRA_DWELL_MS = "dwell_ms"
-        const val DEFAULT_DWELL_MS = 8_000L
+        const val DEFAULT_DWELL_MS = WatchState.DEFAULT_DWELL_MS
         private const val NOTIF_ID = 42
         private const val ALARM_CHECK_INTERVAL_MS = 1_000L
         private const val TAG = "AnchorWatchService"

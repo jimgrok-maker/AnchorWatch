@@ -40,6 +40,11 @@ object WatchStore {
         persist(_state.value)
     }
 
+    fun setDwellMs(ms: Long) {
+        _state.update { it.copy(dwellMs = ms.coerceIn(WatchState.MIN_DWELL_MS, WatchState.MAX_DWELL_MS)) }
+        persist(_state.value)
+    }
+
     fun setUseFeet(useFeet: Boolean) {
         _state.update { it.copy(useFeet = useFeet) }
         persist(_state.value)
@@ -63,7 +68,8 @@ object WatchStore {
             gpsEnabled = true,
             lastUpdateMs = anchor.timeMs,
             lastAccurateFixMs = System.currentTimeMillis(),
-            useFeet = _state.value.useFeet
+            useFeet = _state.value.useFeet,
+            dwellMs = _state.value.dwellMs
         )
         persist(_state.value)
     }
@@ -85,7 +91,8 @@ object WatchStore {
             gpsEnabled = true,
             lastUpdateMs = System.currentTimeMillis(),
             lastAccurateFixMs = System.currentTimeMillis(),
-            useFeet = _state.value.useFeet
+            useFeet = _state.value.useFeet,
+            dwellMs = _state.value.dwellMs
         )
         persist(_state.value)
     }
@@ -196,7 +203,8 @@ object WatchStore {
             gpsEnabled = p.getBoolean(K_GPS_ENABLED, true),
             lastUpdateMs = p.getLong(K_LAST_UPDATE_MS, 0L),
             lastAccurateFixMs = p.getLong(K_LAST_ACCURATE_FIX_MS, 0L),
-            useFeet = p.getBoolean(K_USE_FEET, true)
+            useFeet = p.getBoolean(K_USE_FEET, true),
+            dwellMs = p.getLong(K_DWELL_MS, WatchState.DEFAULT_DWELL_MS)
         ).toWatchState()
         trackBuffer.clear()
         trackVersion.incrementAndGet()
@@ -220,6 +228,7 @@ object WatchStore {
             .putLong(K_LAST_UPDATE_MS, snap.lastUpdateMs)
             .putLong(K_LAST_ACCURATE_FIX_MS, snap.lastAccurateFixMs)
             .putBoolean(K_USE_FEET, snap.useFeet)
+            .putLong(K_DWELL_MS, snap.dwellMs)
             .apply()
     }
 
@@ -237,6 +246,7 @@ object WatchStore {
     private const val K_LAST_UPDATE_MS = "last_update_ms"
     private const val K_LAST_ACCURATE_FIX_MS = "last_accurate_fix_ms"
     private const val K_USE_FEET = "use_feet"
+    private const val K_DWELL_MS = "dwell_ms"
 }
 
 internal data class WatchPrefsSnapshot(
@@ -254,6 +264,7 @@ internal data class WatchPrefsSnapshot(
     val lastUpdateMs: Long,
     val useFeet: Boolean,
     val lastAccurateFixMs: Long = 0L,
+    val dwellMs: Long = WatchState.DEFAULT_DWELL_MS,
 )
 
 internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapshot(
@@ -271,6 +282,7 @@ internal fun WatchState.toPrefsSnapshot(): WatchPrefsSnapshot = WatchPrefsSnapsh
     lastUpdateMs = lastUpdateMs,
     lastAccurateFixMs = lastAccurateFixMs,
     useFeet = useFeet,
+    dwellMs = dwellMs,
 )
 
 internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
@@ -287,6 +299,7 @@ internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
     lastUpdateMs = lastUpdateMs,
     lastAccurateFixMs = lastAccurateFixMs,
     useFeet = useFeet,
+    dwellMs = dwellMs.coerceIn(WatchState.MIN_DWELL_MS, WatchState.MAX_DWELL_MS),
 )
 
 private fun parseStoredFix(lat: String?, lon: String?): GeoFix? {

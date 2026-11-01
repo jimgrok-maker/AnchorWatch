@@ -134,7 +134,7 @@ fun WatchScreen() {
     val context = LocalContext.current
     val state by WatchStore.state.collectAsStateWithLifecycle()
     var followBoat by remember { mutableStateOf(true) }
-    var dwellSec by remember { mutableStateOf(8) }
+    val dwellSec = (state.dwellMs / 1000L).toInt()
     var permissionNote by remember { mutableStateOf<String?>(null) }
     var locationGranted by remember {
         mutableStateOf(
@@ -238,12 +238,12 @@ fun WatchScreen() {
                 ControlsCard(
                     state = state,
                     dwellSec = dwellSec,
-                    onDwell = { dwellSec = it },
+                    onDwell = { WatchStore.setDwellMs(it * 1000L) },
                     followBoat = followBoat,
                     onFollow = { followBoat = it },
                     onRadius = { WatchStore.setRadius(it) },
                     onUnits = { WatchStore.setUseFeet(it) },
-                    onDrop = { AnchorWatchService.start(context, state.radiusFt, dwellSec * 1000L) },
+                    onDrop = { AnchorWatchService.start(context, state.radiusFt, state.dwellMs) },
                     onWeigh = { AnchorWatchService.stop(context) },
                     onSilence = { AnchorWatchService.silence(context) },
                     onTest = { AnchorWatchService.testAlarm(context) },
