@@ -44,7 +44,7 @@ Leave the phone where it can see sky - not down in a closed locker.
 Open the project in Android Studio (Ladybug / Koala or newer) or run:
 
 ```
-gradle :app:assembleRelease
+./gradlew :app:assembleRelease
 ```
 
 APK lands at `app/build/outputs/apk/release/app-release.apk`.
