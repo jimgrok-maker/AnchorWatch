@@ -1,14 +1,15 @@
 package com.jimgrok.anchorwatch.service
 
 import android.Manifest
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationManager
-import android.app.ForegroundServiceStartNotAllowedException
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -16,9 +17,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.jimgrok.anchorwatch.AnchorWatchApp
 import com.jimgrok.anchorwatch.MainActivity
@@ -30,10 +33,10 @@ import com.jimgrok.anchorwatch.alarm.GpsLostAction
 import com.jimgrok.anchorwatch.alarm.SilenceAction
 import com.jimgrok.anchorwatch.alarm.TEST_ALARM_DURATION_MS
 import com.jimgrok.anchorwatch.alarm.gpsLostAction
+import com.jimgrok.anchorwatch.alarm.shouldFireDragAlarm
 import com.jimgrok.anchorwatch.alarm.shouldResumeAlarm
 import com.jimgrok.anchorwatch.alarm.shouldStartTestAlarm
 import com.jimgrok.anchorwatch.alarm.silenceAction
-import com.jimgrok.anchorwatch.alarm.shouldFireDragAlarm
 import com.jimgrok.anchorwatch.data.GeoFix
 import com.jimgrok.anchorwatch.data.WatchState
 import com.jimgrok.anchorwatch.data.WatchStore
@@ -45,6 +48,7 @@ class AnchorWatchService : Service(), LocationListener {
 
     private lateinit var locationManager: LocationManager
     private lateinit var alarmPlayer: AlarmPlayer
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
 
@@ -108,7 +112,11 @@ class AnchorWatchService : Service(), LocationListener {
             WatchStore.setDwellMs(intent.getLongExtra(EXTRA_DWELL_MS, WatchState.DEFAULT_DWELL_MS))
         }
 
-        if (state.watching && (state.anchor != null || state.alarming)) {
+        acquireWakeLock()
+
+        // Resume any already-armed watch (including waiting-for-hook on a sticky restart) without
+        // resetting the anchor or the GPS-lost escalation clock.
+        if (state.watching && (state.anchor != null || state.alarming || intent == null)) {
             Log.i(TAG, "Resuming persisted watch (anchor=${state.anchor?.latitude},${state.anchor?.longitude}, radius=${state.radiusFt}ft, alarming=${state.alarming})")
             WatchStore.setRadius(radius)
             if (state.lastAccurateFixMs <= 0) WatchStore.markAccurateFixClock(System.currentTimeMillis())
@@ -126,7 +134,7 @@ class AnchorWatchService : Service(), LocationListener {
         if (seed != null && isAccurateEnough(seed, radius)) {
             WatchStore.startWatch(seed, radius)
         } else {
-            Log.i(TAG, "No accurate fix yet; waiting for the first good GPS fix to drop the hook")
+            Log.i(TAG, "No accurate GPS fix yet; waiting for the first good GPS fix to drop the hook")
             WatchStore.startWatchPending(radius)
         }
 
@@ -141,9 +149,33 @@ class AnchorWatchService : Service(), LocationListener {
         mainHandler.removeCallbacks(testStopRunnable)
         stopGps()
         alarmPlayer.stop()
+        releaseWakeLock()
+        WatchStore.setTestAlarming(false)
         notificationManager.cancel(TEST_NOTIF_ID)
         WatchStore.flush()
         super.onDestroy()
+    }
+
+    private fun acquireWakeLock() {
+        try {
+            val pm = getSystemService(PowerManager::class.java) ?: return
+            if (wakeLock == null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AnchorWatch:WatchLock")
+                    .apply { setReferenceCounted(false) }
+            }
+            wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire wake lock", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { wl ->
+            if (wl.isHeld) {
+                runCatching { wl.release() }.onFailure { Log.w(TAG, "WakeLock release failed", it) }
+            }
+        }
+        wakeLock = null
     }
 
     /**
@@ -156,8 +188,13 @@ class AnchorWatchService : Service(), LocationListener {
             (action == ACTION_TEST_ALARM || (action == ACTION_SILENCE && testActive))
         val model = notificationModel(state)
         val notification = if (testWhileIdle) buildTestNotification() else buildNotification(state, model)
+        val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        } else {
+            0
+        }
         return try {
-            startForeground(NOTIF_ID, notification)
+            ServiceCompat.startForeground(this, NOTIF_ID, notification, fgsType)
             lastNotification = if (testWhileIdle) null else model
             true
         } catch (e: IllegalStateException) {
@@ -195,6 +232,7 @@ class AnchorWatchService : Service(), LocationListener {
                     .build()
             )
         }
+        releaseWakeLock()
         stopSelf()
         return START_NOT_STICKY
     }
@@ -224,12 +262,13 @@ class AnchorWatchService : Service(), LocationListener {
 
     /**
      * Play the alarm for [TEST_ALARM_DURATION_MS] with a "Test alarm" notification. This is
-     * transient: nothing is written to WatchStore, and an active watch is left alone.
+     * transient: nothing is written to WatchStore prefs, and an active watch is left alone.
      */
     private fun handleTestAlarm(): Int {
         val state = WatchStore.snapshot()
         if (!shouldStartTestAlarm(state.watching, state.alarming)) return START_STICKY
         testActive = true
+        WatchStore.setTestAlarming(true)
         alarmPlayer.start()
         // Idle: the test notification is already the foreground one. Watching: show it beside
         // the watch notification instead of replacing it.
@@ -246,6 +285,7 @@ class AnchorWatchService : Service(), LocationListener {
     private fun endTest(stopIfIdle: Boolean = true) {
         if (!testActive) return
         testActive = false
+        WatchStore.setTestAlarming(false)
         mainHandler.removeCallbacks(testStopRunnable)
         val state = WatchStore.snapshot()
         // If a real alarm began meanwhile it shares the player and must keep sounding.
@@ -288,10 +328,13 @@ class AnchorWatchService : Service(), LocationListener {
         val now = System.currentTimeMillis()
         val accurate = isAccurateEnough(fix, state.radiusFt)
         val outside = accurate && distanceFt > state.radiusFt
-        if (!outside && state.silenced && accurate) {
+        // Clear silence once back inside on an accurate fix, OR when recovering from a
+        // silenced GPS-lost alarm so a real drag excursion isn't accidentally muted.
+        val clearSilenced = accurate && state.silenced && (!outside || state.gpsLost)
+        if (clearSilenced) {
             WatchStore.clearSilence()
         }
-        val silenced = if (!outside) false else state.silenced
+        val silenced = if (clearSilenced) false else state.silenced
         val outsideSince = when {
             !accurate -> state.outsideSinceMs
             !outside -> null
@@ -402,20 +445,26 @@ class AnchorWatchService : Service(), LocationListener {
     private fun stopWatchInternal() {
         stopAlarmTicker()
         testActive = false
+        WatchStore.setTestAlarming(false)
         mainHandler.removeCallbacks(testStopRunnable)
         alarmPlayer.stop()
         stopGps()
+        releaseWakeLock()
         WatchStore.stopWatch()
         notificationManager.cancel(TEST_NOTIF_ID)
         lastNotification = null
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
+    /**
+     * Returns only a genuinely fresh GPS_PROVIDER fix (<= 10s old) so we never drop the hook on
+     * a stale restored position or a coarse network preview fix.
+     */
     private fun lastKnownFix(): GeoFix? {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            return WatchStore.snapshot().boat
+            return null
         }
         val loc = try {
             locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
@@ -426,7 +475,7 @@ class AnchorWatchService : Service(), LocationListener {
         return if (loc != null && isFreshFix(loc.elapsedRealtimeNanos, SystemClock.elapsedRealtimeNanos())) {
             GeoFix(loc.latitude, loc.longitude, loc.accuracy, loc.time)
         } else {
-            WatchStore.snapshot().boat
+            null
         }
     }
 
@@ -538,6 +587,7 @@ class AnchorWatchService : Service(), LocationListener {
         private const val TEST_NOTIF_ID = 43
         private const val DROPPED_NOTIF_ID = 44
         private const val ALARM_CHECK_INTERVAL_MS = 1_000L
+        private const val WAKE_LOCK_TIMEOUT_MS = 16 * 60 * 60 * 1000L
         private const val TAG = "AnchorWatchService"
 
         fun start(context: Context, radiusFt: Int, dwellMs: Long = DEFAULT_DWELL_MS) {

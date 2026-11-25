@@ -1,6 +1,7 @@
 package com.jimgrok.anchorwatch.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -20,6 +21,7 @@ class WatchStorePersistTest {
             lastAccurateFixMs = 400L,
             useFeet = false,
             dwellMs = 12_000L,
+            testAlarming = true,
         )
 
         val restored = original.toPrefsSnapshot().toWatchState()
@@ -37,6 +39,7 @@ class WatchStorePersistTest {
         assertEquals(400L, restored.lastAccurateFixMs)
         assertEquals(false, restored.useFeet)
         assertEquals(12_000L, restored.dwellMs)
+        assertFalse(restored.testAlarming)
         assertEquals(0.0, restored.distanceFt, 0.0)
     }
 
@@ -78,11 +81,13 @@ class WatchStorePersistTest {
     }
 
     @Test
-    fun outOfRangeStoredDwellIsClamped() {
-        val low = WatchState().toPrefsSnapshot().copy(dwellMs = 0L).toWatchState()
-        val high = WatchState().toPrefsSnapshot().copy(dwellMs = 10 * 60_000L).toWatchState()
+    fun outOfRangeStoredDwellAndRadiusAreClamped() {
+        val low = WatchState().toPrefsSnapshot().copy(dwellMs = 0L, radiusFt = 5).toWatchState()
+        val high = WatchState().toPrefsSnapshot().copy(dwellMs = 10 * 60_000L, radiusFt = 999).toWatchState()
 
         assertEquals(WatchState.MIN_DWELL_MS, low.dwellMs)
         assertEquals(WatchState.MAX_DWELL_MS, high.dwellMs)
+        assertEquals(WatchState.MIN_RADIUS_FT, low.radiusFt)
+        assertEquals(WatchState.MAX_RADIUS_FT, high.radiusFt)
     }
 }

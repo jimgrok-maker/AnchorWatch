@@ -25,13 +25,17 @@ data class WatchState(
     val lastAccurateFixMs: Long = 0L,
     val useFeet: Boolean = true,
     /** How long the boat must stay outside the circle before the drag alarm fires. */
-    val dwellMs: Long = DEFAULT_DWELL_MS
+    val dwellMs: Long = DEFAULT_DWELL_MS,
+    /** Transient in-memory flag while the 10 s Test alarm is sounding; never persisted. */
+    val testAlarming: Boolean = false
 ) {
     val radiusM: Double get() = radiusFt * FT_TO_M
     val distanceM: Double get() = distanceFt * FT_TO_M
     val waitingForHook: Boolean get() = watching && anchor == null
 
     companion object {
+        const val MIN_RADIUS_FT = 20
+        const val MAX_RADIUS_FT = 500
         const val DEFAULT_DWELL_MS = 8_000L
         const val MIN_DWELL_MS = 3_000L
         const val MAX_DWELL_MS = 20_000L
