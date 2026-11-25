@@ -44,7 +44,9 @@ object WatchStore {
     }
 
     fun setRadius(feet: Int) {
-        _state.update { it.copy(radiusFt = feet.coerceIn(20, 500)) }
+        _state.update {
+            it.copy(radiusFt = feet.coerceIn(WatchState.MIN_RADIUS_FT, WatchState.MAX_RADIUS_FT))
+        }
         persist(_state.value)
     }
 
@@ -58,11 +60,17 @@ object WatchStore {
         persist(_state.value)
     }
 
+    /** Transient UI state for the 10 s test alarm; intentionally never persisted. */
+    fun setTestAlarming(on: Boolean) {
+        _state.update { if (it.testAlarming == on) it else it.copy(testAlarming = on) }
+    }
+
     /** Start a real watch with a known hook position. */
     fun startWatch(anchor: GeoFix, radiusFt: Int) {
         trackBuffer.clear()
         trackBuffer.addLast(anchor)
         trackVersion.incrementAndGet()
+        val prev = _state.value
         _state.value = WatchState(
             watching = true,
             alarming = false,
@@ -70,14 +78,15 @@ object WatchStore {
             gpsLost = false,
             anchor = anchor,
             boat = anchor,
-            radiusFt = radiusFt,
+            radiusFt = radiusFt.coerceIn(WatchState.MIN_RADIUS_FT, WatchState.MAX_RADIUS_FT),
             distanceFt = 0.0,
             outsideSinceMs = null,
             gpsEnabled = true,
             lastUpdateMs = anchor.timeMs,
             lastAccurateFixMs = System.currentTimeMillis(),
-            useFeet = _state.value.useFeet,
-            dwellMs = _state.value.dwellMs
+            useFeet = prev.useFeet,
+            dwellMs = prev.dwellMs,
+            testAlarming = prev.testAlarming
         )
         persist(_state.value)
     }
@@ -86,21 +95,23 @@ object WatchStore {
     fun startWatchPending(radiusFt: Int) {
         trackBuffer.clear()
         trackVersion.incrementAndGet()
+        val prev = _state.value
         _state.value = WatchState(
             watching = true,
             alarming = false,
             silenced = false,
             gpsLost = false,
             anchor = null,
-            boat = _state.value.boat,
-            radiusFt = radiusFt.coerceIn(20, 500),
+            boat = prev.boat,
+            radiusFt = radiusFt.coerceIn(WatchState.MIN_RADIUS_FT, WatchState.MAX_RADIUS_FT),
             distanceFt = 0.0,
             outsideSinceMs = null,
             gpsEnabled = true,
             lastUpdateMs = System.currentTimeMillis(),
             lastAccurateFixMs = System.currentTimeMillis(),
-            useFeet = _state.value.useFeet,
-            dwellMs = _state.value.dwellMs
+            useFeet = prev.useFeet,
+            dwellMs = prev.dwellMs,
+            testAlarming = prev.testAlarming
         )
         persist(_state.value)
     }
@@ -313,7 +324,7 @@ internal fun WatchPrefsSnapshot.toWatchState(): WatchState = WatchState(
     gpsLost = gpsLost,
     anchor = parseStoredFix(anchorLat, anchorLon),
     boat = parseStoredFix(boatLat, boatLon),
-    radiusFt = radiusFt,
+    radiusFt = radiusFt.coerceIn(WatchState.MIN_RADIUS_FT, WatchState.MAX_RADIUS_FT),
     distanceFt = 0.0,
     outsideSinceMs = outsideSinceMs.takeIf { it >= 0 },
     gpsEnabled = gpsEnabled,

@@ -12,8 +12,10 @@ import android.util.Log
 
 class AlarmPlayer(private val context: Context) {
     private var player: MediaPlayer? = null
-    private var preparing = false
-    private var dismissed = false
+    private var pendingPlayer: MediaPlayer? = null
+    private var warnPlayer: MediaPlayer? = null
+    private var sessionId = 0
+
     private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         context.getSystemService(VibratorManager::class.java)?.defaultVibrator
     } else {
@@ -22,14 +24,12 @@ class AlarmPlayer(private val context: Context) {
     }
 
     fun start() {
-        if (player != null || preparing) return
-        dismissed = false
-        preparing = true
+        if (player != null || pendingPlayer != null) return
+        val mySession = ++sessionId
         val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         if (uri == null) {
             Log.w(TAG, "No default alarm/notify ringtone URI; vibration only")
-            preparing = false
             vibrate()
             return
         }
@@ -42,35 +42,36 @@ class AlarmPlayer(private val context: Context) {
             )
             isLooping = true
             setVolume(1f, 1f)
-            setOnPreparedListener {
-                preparing = false
-                if (dismissed) {
-                    releaseQuietly()
+            setOnPreparedListener { prepared ->
+                if (mySession != sessionId) {
+                    prepared.releaseQuietly()
                     return@setOnPreparedListener
                 }
+                if (pendingPlayer === prepared) pendingPlayer = null
                 try {
-                    start()
+                    prepared.start()
+                    player = prepared
                 } catch (e: IllegalStateException) {
                     Log.w(TAG, "MediaPlayer.start() failed in onPrepared", e)
-                    releaseQuietly()
-                    return@setOnPreparedListener
+                    prepared.releaseQuietly()
                 }
-                this@AlarmPlayer.player = this
             }
-            setOnErrorListener { _, what, extra ->
+            setOnErrorListener { failed, what, extra ->
                 Log.w(TAG, "MediaPlayer onError what=$what extra=$extra")
-                preparing = false
-                releaseQuietly()
+                if (pendingPlayer === failed) pendingPlayer = null
+                if (player === failed) player = null
+                failed.releaseQuietly()
                 true
             }
         }
+        pendingPlayer = mp
         try {
             mp.setDataSource(context, uri)
             mp.prepareAsync()
         } catch (e: Exception) {
             Log.w(TAG, "setDataSource/prepareAsync failed; falling back to vibration", e)
-            preparing = false
-            mp.release()
+            if (pendingPlayer === mp) pendingPlayer = null
+            mp.releaseQuietly()
         }
         vibrate()
     }
@@ -82,6 +83,8 @@ class AlarmPlayer(private val context: Context) {
         val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         if (uri == null) return
+        warnPlayer?.releaseQuietly()
+        warnPlayer = null
         runCatching {
             val mp = MediaPlayer().apply {
                 setAudioAttributes(
@@ -91,13 +94,35 @@ class AlarmPlayer(private val context: Context) {
                         .build()
                 )
                 isLooping = false
-                setOnCompletionListener { release() }
-                setOnErrorListener { _, _, _ -> release(); true }
+                setOnPreparedListener { prepared ->
+                    if (warnPlayer !== prepared) {
+                        prepared.releaseQuietly()
+                    } else {
+                        runCatching { prepared.start() }
+                            .onFailure {
+                                warnPlayer = null
+                                prepared.releaseQuietly()
+                            }
+                    }
+                }
+                setOnCompletionListener { finished ->
+                    if (warnPlayer === finished) warnPlayer = null
+                    finished.releaseQuietly()
+                }
+                setOnErrorListener { failed, _, _ ->
+                    if (warnPlayer === failed) warnPlayer = null
+                    failed.releaseQuietly()
+                    true
+                }
             }
+            warnPlayer = mp
             mp.setDataSource(context, uri)
             mp.prepareAsync()
-            mp.setOnPreparedListener { it.start() }
-        }.onFailure { Log.w(TAG, "warnOnce failed", it) }
+        }.onFailure {
+            Log.w(TAG, "warnOnce failed", it)
+            warnPlayer?.releaseQuietly()
+            warnPlayer = null
+        }
     }
 
     private fun vibrate() {
@@ -119,21 +144,13 @@ class AlarmPlayer(private val context: Context) {
     }
 
     fun stop() {
-        dismissed = true
-        preparing = false
-        player?.let { p ->
-            try {
-                if (p.isPlaying) p.stop()
-            } catch (e: IllegalStateException) {
-                Log.w(TAG, "MediaPlayer.stop() in stop()", e)
-            }
-            try {
-                p.release()
-            } catch (e: Exception) {
-                Log.w(TAG, "MediaPlayer.release() in stop()", e)
-            }
-        }
+        sessionId++
+        pendingPlayer?.releaseQuietly()
+        pendingPlayer = null
+        player?.releaseQuietly()
         player = null
+        warnPlayer?.releaseQuietly()
+        warnPlayer = null
         vibrator?.cancel()
     }
 
